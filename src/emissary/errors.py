@@ -11,3 +11,13 @@ class ProviderError(RuntimeError):
     def __init__(self, message: str, *, retryable: bool = False):
         super().__init__(message)
         self.retryable = retryable
+
+
+def retryable_status(status_code: int) -> bool:
+    """Whether an HTTP status is worth asking a different provider about.
+
+    Lives here, not in either wire adapter: the two SDKs raise different
+    exception types but the policy is the same, and two copies of it are two
+    things that can drift into disagreeing about what an outage looks like.
+    """
+    return status_code in (408, 409, 429) or status_code >= 500

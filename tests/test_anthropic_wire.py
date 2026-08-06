@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from emissary import ProviderError, parse_spec
-from emissary.wire.anthropic_wire import call_text, call_tool
+from emissary.wire.anthropic_wire import call_tool
 
 TOOL = {"name": "record", "description": "d", "input_schema": {"type": "object"}}
 
@@ -108,13 +108,3 @@ def test_a_connection_error_is_retryable():
         call_tool(parse_spec("anthropic"), system="s", blocks=[{"text": "d"}], tool=TOOL)
 
     assert caught.value.retryable
-
-
-def test_call_text_returns_concatenated_text():
-    response = _response(content=[SimpleNamespace(type="text", text="hello")])
-    with _mock_client(response):
-        out = call_text(
-            parse_spec("anthropic"), system="s", messages=[{"role": "user", "content": "hi"}]
-        )
-
-    assert out.payload == "hello"

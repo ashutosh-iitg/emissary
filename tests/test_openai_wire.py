@@ -10,13 +10,13 @@ import httpx
 import pytest
 
 from emissary import ProviderError, parse_spec
-from emissary.wire.openai_wire import call_text, call_tool
+from emissary.wire.openai_wire import call_tool
 
 TOOL = {"name": "record", "description": "d", "input_schema": {"type": "object"}}
 
 
-def _response(*, finish_reason="tool_calls", tool_calls=None, text=None, model="kimi-k3"):
-    message = SimpleNamespace(tool_calls=tool_calls, content=text)
+def _response(*, finish_reason="tool_calls", tool_calls=None, model="kimi-k3"):
+    message = SimpleNamespace(tool_calls=tool_calls)
     return SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
         model=model,
@@ -93,16 +93,6 @@ def test_server_errors_are_retryable_client_errors_are_not():
     with _mock_client(side_effect=bad_request), pytest.raises(ProviderError) as caught:
         call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
     assert not caught.value.retryable
-
-
-def test_call_text_returns_the_message_content():
-    response = _response(text="hello there")
-    with _mock_client(response):
-        out = call_text(
-            parse_spec("kimi"), system="s", messages=[{"role": "user", "content": "hi"}]
-        )
-
-    assert out.payload == "hello there"
 
 
 def test_strict_is_only_sent_for_first_party_providers():

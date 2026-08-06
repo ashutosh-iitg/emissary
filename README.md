@@ -6,6 +6,9 @@ completions — which covers OpenAI, Kimi, DeepSeek, Gemini, and a locally
 hosted [vLLM](https://github.com/vllm-project/vllm) server. Two adapters and
 a table, not five-or-six integrations.
 
+One call shape: a tool-forced structured call, because the callers that
+exist all want a typed answer rather than prose.
+
 ```python
 import emissary
 
@@ -18,12 +21,11 @@ result = emissary.call_tool(
     tool={"name": "summarize", "description": "...", "input_schema": {...}},
 )
 print(result.payload)  # the tool's arguments, as a dict
-
-result = emissary.call_text(
-    spec, system="You are terse.", messages=[{"role": "user", "content": "Hi"}]
-)
-print(result.payload)  # a string
 ```
+
+`blocks` marked `cache=True` get an ephemeral prompt-cache breakpoint on the
+Anthropic wire — put it on content resent across many calls. The
+OpenAI-compatible wire has no equivalent and concatenates instead.
 
 ## Providers
 
@@ -48,7 +50,7 @@ server doesn't authenticate unless you put something in front of it.
 spec = emissary.resolve_spec(cli_arg, env_var="MY_APP_LLM_PROVIDER", default="anthropic")
 ```
 
-`call_tool_with_fallback` / `call_text_with_fallback` make one attempt on a
+`call_tool_with_fallback` makes one attempt on a
 primary `Spec`, then one attempt on a fallback `Spec` — but only if the
 primary failed in a way another provider could plausibly answer
 (`ProviderError.retryable`: connection errors, rate limits, overloads,

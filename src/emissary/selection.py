@@ -10,11 +10,11 @@ uses `call_tool_with_fallback` directly with two already-resolved `Spec`s.
 import os
 from typing import Any
 
-from .calls import call_text, call_tool
+from .calls import call_tool
 from .errors import ProviderError
 from .provider import Spec, parse_spec
 from .result import CallResult
-from .wire.anthropic_wire import Block, Message
+from .wire.types import Block
 
 
 def resolve_spec(value: str | None = None, *, env_var: str, default: str) -> Spec:
@@ -55,19 +55,4 @@ def call_tool_with_fallback(
         except ProviderError as second:
             # Both named, because "the fallback failed" without saying what
             # the primary did sends an operator to the wrong status page.
-            raise ProviderError(f"{first}; fallback {second}") from second
-
-
-def call_text_with_fallback(
-    primary: Spec, fallback: Spec | None, *, system: str, messages: list[Message]
-) -> CallResult:
-    """`call_tool_with_fallback`'s policy, for plain text calls."""
-    try:
-        return call_text(primary, system=system, messages=messages)
-    except ProviderError as first:
-        if not first.retryable or fallback is None or fallback.name == primary.name:
-            raise
-        try:
-            return call_text(fallback, system=system, messages=messages)
-        except ProviderError as second:
             raise ProviderError(f"{first}; fallback {second}") from second

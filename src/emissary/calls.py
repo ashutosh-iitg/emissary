@@ -1,4 +1,4 @@
-"""The two public entry points — one structured, one plain — dispatched by wire.
+"""The public entry point, dispatched by wire.
 
 Everything above this speaks a `Spec` and never learns which wire adapter
 answered. `provider.py` holds the registry; `wire/` holds the two wire
@@ -11,9 +11,9 @@ from .errors import ProviderError
 from .provider import Spec, key_present
 from .result import CallResult
 from .wire import anthropic_wire, openai_wire
-from .wire.anthropic_wire import Block, Message
+from .wire.types import Block
 
-__all__ = ["Block", "Message", "call_text", "call_tool"]
+__all__ = ["Block", "call_tool"]
 
 
 def call_tool(
@@ -38,12 +38,3 @@ def call_tool(
             spec, system=system, blocks=blocks, tool=tool, effort=effort
         )
     return openai_wire.call_tool(spec, system=system, blocks=blocks, tool=tool)
-
-
-def call_text(spec: Spec, *, system: str, messages: list[Message]) -> CallResult:
-    """One plain call, no forced tool — text in, text out."""
-    if not key_present(spec):
-        raise ProviderError(f"{spec.provider.key_env} is not set for provider {spec.name!r}")
-    if spec.provider.wire == "anthropic":
-        return anthropic_wire.call_text(spec, system=system, messages=messages)
-    return openai_wire.call_text(spec, system=system, messages=messages)
