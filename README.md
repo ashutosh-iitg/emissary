@@ -111,3 +111,7 @@ uv run ruff check .
 No test reaches a network — the wire adapters are tested against a mocked
 SDK client, and the fallback policy is tested by mocking the wire dispatch
 itself.
+
+## License
+
+[MIT](LICENSE) © ashutosh-iitg

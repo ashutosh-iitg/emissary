@@ -3,6 +3,8 @@ name = "emissary"
 version = "0.1.0"
 description = "A small, provider-agnostic wrapper over LLM APIs — Anthropic native and OpenAI-compatible wire formats, including local vLLM servers."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "ashutosh-iitg", email = "ashutoshk167@gmail.com" }
 ]
