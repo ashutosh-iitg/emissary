@@ -75,6 +75,24 @@ def test_unparseable_tool_arguments_are_not_retryable():
     assert not caught.value.retryable
 
 
+def test_non_object_tool_arguments_are_rejected():
+    """CallResult promises a dictionary even when a compatible provider does
+    not enforce the supplied object schema."""
+    call = SimpleNamespace(function=SimpleNamespace(arguments='["not", "an", "object"]'))
+    response = _response(tool_calls=[call])
+    with _mock_client(response), pytest.raises(ProviderError, match="JSON object") as caught:
+        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+
+    assert not caught.value.retryable
+
+
+def test_an_empty_choices_response_is_reported_as_a_provider_error():
+    response = SimpleNamespace(choices=[], model="kimi-k3", usage=None)
+
+    with _mock_client(response), pytest.raises(ProviderError, match="no completion choice"):
+        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+
+
 def test_server_errors_are_retryable_client_errors_are_not():
     request = httpx.Request("POST", "https://api.moonshot.ai/v1")
 

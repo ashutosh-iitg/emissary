@@ -105,6 +105,23 @@ def test_no_label_in_the_alternatives_is_an_error_not_a_guess():
         call_choice(parse_spec("vllm:qwen3-8b"), system="s", blocks=BLOCKS, labels=["SAFE", "FLAG"])
 
 
+@pytest.mark.parametrize(
+    "labels",
+    [
+        ["FLAG_A", "FLAG_B"],
+        ["SAFE", "safe"],
+        ["SAFE", " "],
+    ],
+)
+def test_ambiguous_or_empty_labels_are_rejected_before_calling_the_provider(labels):
+    """A score must not depend on label ordering or an empty label matching
+    every token by prefix."""
+    with _mock_client() as ctor, pytest.raises(ProviderError, match="labels"):
+        call_choice(parse_spec("vllm:qwen3-8b"), system="s", blocks=BLOCKS, labels=labels)
+
+    ctor.return_value.chat.completions.create.assert_not_called()
+
+
 def test_a_model_that_returns_no_logprobs_cannot_be_scored():
     response = SimpleNamespace(
         choices=[SimpleNamespace(logprobs=None)],
@@ -113,6 +130,17 @@ def test_a_model_that_returns_no_logprobs_cannot_be_scored():
     )
 
     with _mock_client(response), pytest.raises(ProviderError, match="cannot be scored"):
+        call_choice(parse_spec("vllm:qwen3-8b"), system="s", blocks=BLOCKS, labels=["SAFE", "FLAG"])
+
+
+def test_an_empty_choices_response_is_reported_as_a_provider_error():
+    response = SimpleNamespace(
+        choices=[],
+        model="qwen3-8b",
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+    )
+
+    with _mock_client(response), pytest.raises(ProviderError, match="no completion choice"):
         call_choice(parse_spec("vllm:qwen3-8b"), system="s", blocks=BLOCKS, labels=["SAFE", "FLAG"])
 
 

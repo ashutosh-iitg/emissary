@@ -4,6 +4,7 @@ gemini, and vllm all speak this wire."""
 import json
 import math
 import os
+import re
 from typing import Any
 
 from ..errors import ProviderError, retryable_status
@@ -40,6 +41,25 @@ def _status_error(spec: Spec, exc) -> ProviderError:
     )
 
 
+def _first_label_unit(label: str) -> str | None:
+    match = re.match(r"[A-Z0-9]+", label.strip().upper())
+    return match.group() if match else None
+
+
+def _validate_labels(spec: Spec, labels: list[str]) -> None:
+    if not labels:
+        raise ProviderError(f"{spec}: call_choice needs at least one label")
+
+    units: set[str] = set()
+    for label in labels:
+        unit = _first_label_unit(label)
+        if unit is None or unit in units:
+            raise ProviderError(
+                f"{spec}: labels must be non-empty and distinguishable by their first token"
+            )
+        units.add(unit)
+
+
 def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, Any]) -> CallResult:
     import openai
 
@@ -74,6 +94,8 @@ def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, A
     except openai.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    if not response.choices:
+        raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]
     calls = choice.message.tool_calls or []
     if not calls:
@@ -85,6 +107,8 @@ def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, A
         # Not retryable: the model answered, just unusably. Falling back here
         # would be shopping for a provider whose JSON happens to parse.
         raise ProviderError(f"{spec}: tool arguments were not valid JSON ({exc})") from exc
+    if not isinstance(payload, dict):
+        raise ProviderError(f"{spec}: tool arguments were not a JSON object")
 
     usage = response.usage
     details = getattr(usage, "prompt_tokens_details", None)
@@ -114,8 +138,7 @@ def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[st
     import openai
 
     provider = spec.provider
-    if not labels:
-        raise ProviderError(f"{spec}: call_choice needs at least one label")
+    _validate_labels(spec, labels)
 
     user_content = "\n\n".join(block["text"] for block in blocks)
     extra: dict[str, Any] = {}
@@ -143,6 +166,8 @@ def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[st
     except openai.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    if not response.choices:
+        raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]
     content = getattr(choice.logprobs, "content", None) if choice.logprobs else None
     if not content:
