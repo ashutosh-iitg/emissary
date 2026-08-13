@@ -9,11 +9,11 @@ from typing import Any
 
 from .errors import ProviderError
 from .provider import Spec, key_present
-from .result import CallResult
+from .result import CallResult, ChoiceResult
 from .wire import anthropic_wire, openai_wire
 from .wire.types import Block
 
-__all__ = ["Block", "call_tool"]
+__all__ = ["Block", "call_choice", "call_tool"]
 
 
 def call_tool(
@@ -38,3 +38,24 @@ def call_tool(
             spec, system=system, blocks=blocks, tool=tool, effort=effort
         )
     return openai_wire.call_tool(spec, system=system, blocks=blocks, tool=tool)
+
+
+def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[str]) -> ChoiceResult:
+    """Score one exchange against a fixed label set, from the model's logprobs.
+
+    **OpenAI-compatible wire only.** The Anthropic Messages API exposes no
+    token logprobs — there is no parameter for it and no way to derive one, so
+    a Claude-hosted model cannot be scored this way. Point this at a locally
+    served open-weight model (`vllm:<model>`) or at OpenAI. Asking a model to
+    report its own confidence is *not* an equivalent fallback: self-reported
+    confidence is not calibrated, and thresholding it only looks like
+    measurement.
+    """
+    if spec.provider.wire == "anthropic":
+        raise ProviderError(
+            f"{spec}: the Anthropic API exposes no logprobs, so this provider cannot be "
+            "scored — use an OpenAI-compatible provider such as 'vllm:<model>' or 'openai'"
+        )
+    if not key_present(spec):
+        raise ProviderError(f"{spec.provider.key_env} is not set for provider {spec.name!r}")
+    return openai_wire.call_choice(spec, system=system, blocks=blocks, labels=labels)

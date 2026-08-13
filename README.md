@@ -27,6 +27,35 @@ print(result.payload)  # the tool's arguments, as a dict
 Anthropic wire — put it on content resent across many calls. The
 OpenAI-compatible wire has no equivalent and concatenates instead.
 
+## Scoring (`call_choice`)
+
+For classification where you want a **number to threshold** rather than a
+verdict, `call_choice` generates one token and reads the probability the model
+assigned it:
+
+```python
+result = emissary.call_choice(
+    emissary.parse_spec("vllm:my-local-model"),
+    system="Answer with exactly one word: SAFE or FLAG.",
+    blocks=[{"text": "<the thing to classify>", "cache": False}],
+    labels=["SAFE", "FLAG"],
+)
+result.probability("FLAG")  # 0.0-1.0, renormalised over the labels
+result.label                # the most probable one
+```
+
+Cost is one output token. The score comes from the model's own distribution,
+not from asking it to rate its confidence — self-reported confidence is not
+calibrated, and thresholding it only looks like measurement.
+
+**OpenAI-compatible wire only.** The Anthropic Messages API exposes no token
+logprobs, so an `anthropic:` spec is refused with an error naming the
+alternative. On vLLM the call also sends `guided_choice`, constraining
+decoding to the label set; other providers get the same scoring without it.
+
+Labels must differ in their **first token** — they're matched by prefix, so
+`["SAFE", "FLAG"]` works and `["FLAG_A", "FLAG_B"]` does not.
+
 ## Providers
 
 | name | wire | key env | notes |

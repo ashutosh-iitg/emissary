@@ -36,6 +36,12 @@ class Provider:
     # OpenAI moved newer models to `max_completion_tokens`; the
     # compatibility layers still take `max_tokens`.
     max_tokens_field: str = "max_tokens"
+    # Whether the server honours vLLM's `guided_choice` extension, which
+    # constrains decoding to a fixed label set. Only vLLM implements it —
+    # sending it to a vendor endpoint is an unknown-parameter error. Scoring
+    # works without it (the logprobs are read the same way either way); it
+    # just guarantees the sampled token is one of the labels.
+    guided_choice: bool = False
 
     def resolved_base_url(self) -> str | None:
         """The base URL to call, reading an env var for providers whose
@@ -88,6 +94,7 @@ PROVIDERS: dict[str, Provider] = {
         base_url_env="VLLM_BASE_URL",
         base_url="http://localhost:8000/v1",
         default_model=None,
+        guided_choice=True,
     ),
 }
 
