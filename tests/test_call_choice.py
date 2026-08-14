@@ -13,8 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from emissary import ProviderError, parse_spec
-from emissary.calls import call_choice as gated_call_choice
-from emissary.wire.openai_wire import call_choice
+from emissary.llm.calls import call_choice as gated_call_choice
+from emissary.llm.wire.openai_compatible import call_choice
 
 BLOCKS = [{"text": "an exchange", "cache": False}]
 

@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Protocol
 
-from .decision import ToolCall
+from ..llm.decision import ToolCall
 from .tools import Tool
 
 

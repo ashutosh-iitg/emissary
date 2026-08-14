@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .state import RunResult
+from ..harness.state import RunResult
 
 
 @dataclass(frozen=True)

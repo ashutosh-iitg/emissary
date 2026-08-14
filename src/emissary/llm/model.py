@@ -7,7 +7,7 @@ from .decision import ModelResult, ModelSettings, ToolDefinition
 from .errors import CapabilityError, ProviderError
 from .messages import Message
 from .provider import Spec, key_present
-from .wire import anthropic_wire, openai_wire
+from .wire import anthropic, openai_compatible
 
 
 class ModelCaller(Protocol):
@@ -35,10 +35,10 @@ def call_model(
     if tools and not spec.provider.capabilities.tool_calling:
         raise CapabilityError(f"{spec}: this provider does not support tool calling")
     if spec.provider.wire == "anthropic":
-        return anthropic_wire.call_model(
+        return anthropic.call_model(
             spec, system=system, messages=messages, tools=tools, settings=settings
         )
-    return openai_wire.call_model(
+    return openai_compatible.call_model(
         spec, system=system, messages=messages, tools=tools, settings=settings
     )
 

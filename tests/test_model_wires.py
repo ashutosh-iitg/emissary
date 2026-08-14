@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from emissary import ProviderError, parse_spec
-from emissary.decision import FinalOutput, ModelSettings, Refusal, ToolCalls, ToolDefinition
-from emissary.messages import AssistantMessage, TextBlock, ToolMessage, UserMessage
-from emissary.wire import anthropic_wire, openai_wire
+from emissary.llm.decision import FinalOutput, ModelSettings, Refusal, ToolCalls, ToolDefinition
+from emissary.llm.messages import AssistantMessage, TextBlock, ToolMessage, UserMessage
+from emissary.llm.wire import anthropic, openai_compatible
 
 TOOLS = (
     ToolDefinition(
@@ -35,7 +35,9 @@ def test_openai_wire_normalizes_final_text_and_usage():
     client.chat.completions.create.return_value = response
 
     with patch("openai.OpenAI", return_value=client):
-        result = openai_wire.call_model(parse_spec("openai:gpt-5"), system="s", messages=MESSAGES)
+        result = openai_compatible.call_model(
+            parse_spec("openai:gpt-5"), system="s", messages=MESSAGES
+        )
 
     assert result.decision == FinalOutput(text="done")
     assert result.usage.total_tokens == 9
@@ -63,7 +65,7 @@ def test_openai_wire_normalizes_all_tool_calls_and_preserves_ids():
     client.chat.completions.create.return_value = response
 
     with patch("openai.OpenAI", return_value=client) as ctor:
-        result = openai_wire.call_model(
+        result = openai_compatible.call_model(
             parse_spec("vllm:qwen"), system="s", messages=MESSAGES, tools=TOOLS
         )
         sent = ctor.return_value.chat.completions.create.call_args.kwargs
@@ -92,7 +94,7 @@ def test_openai_wire_translates_assistant_and_tool_history():
     client.chat.completions.create.return_value = response
 
     with patch("openai.OpenAI", return_value=client) as ctor:
-        openai_wire.call_model(parse_spec("vllm:qwen"), system="s", messages=prior)
+        openai_compatible.call_model(parse_spec("vllm:qwen"), system="s", messages=prior)
         sent = ctor.return_value.chat.completions.create.call_args.kwargs["messages"]
 
     assert [message["role"] for message in sent] == ["system", "user", "assistant", "tool"]
@@ -121,11 +123,11 @@ def test_anthropic_wire_normalizes_final_text_tool_calls_and_refusal():
     ]
 
     with patch("anthropic.Anthropic", return_value=client):
-        final = anthropic_wire.call_model(parse_spec("anthropic"), system="s", messages=MESSAGES)
-        tools = anthropic_wire.call_model(
+        final = anthropic.call_model(parse_spec("anthropic"), system="s", messages=MESSAGES)
+        tools = anthropic.call_model(
             parse_spec("anthropic"), system="s", messages=MESSAGES, tools=TOOLS
         )
-        refusal = anthropic_wire.call_model(parse_spec("anthropic"), system="s", messages=MESSAGES)
+        refusal = anthropic.call_model(parse_spec("anthropic"), system="s", messages=MESSAGES)
 
     assert final.decision == FinalOutput(text="done")
     assert isinstance(tools.decision, ToolCalls)
@@ -133,7 +135,7 @@ def test_anthropic_wire_normalizes_final_text_tool_calls_and_refusal():
     assert isinstance(refusal.decision, Refusal)
 
 
-@pytest.mark.parametrize("wire", [openai_wire, anthropic_wire])
+@pytest.mark.parametrize("wire", [openai_compatible, anthropic])
 def test_empty_or_contradictory_responses_fail_as_model_behavior(wire):
     usage = SimpleNamespace(
         input_tokens=0,
@@ -143,7 +145,7 @@ def test_empty_or_contradictory_responses_fail_as_model_behavior(wire):
         completion_tokens=0,
         prompt_tokens_details=None,
     )
-    if wire is openai_wire:
+    if wire is openai_compatible:
         response = SimpleNamespace(
             choices=[
                 SimpleNamespace(

@@ -8,7 +8,7 @@ from typing import Any, Literal, Protocol
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 
-from .decision import ToolCall, ToolDefinition
+from ..llm.decision import ToolCall, ToolDefinition
 
 
 @dataclass(frozen=True)

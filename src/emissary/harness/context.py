@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from .messages import AssistantMessage, Message, ToolMessage
+from ..llm.messages import AssistantMessage, Message, ToolMessage
 
 
 class ContextPolicy(Protocol):

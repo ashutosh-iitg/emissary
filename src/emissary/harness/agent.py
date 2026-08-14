@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from .decision import ModelSettings
+from ..llm.decision import ModelSettings
 from .tools import Tool
 
 

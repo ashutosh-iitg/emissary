@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from emissary import ProviderError, parse_spec
-from emissary.wire.anthropic_wire import call_tool
+from emissary.llm.wire.anthropic import call_tool
 
 TOOL = {"name": "record", "description": "d", "input_schema": {"type": "object"}}
 

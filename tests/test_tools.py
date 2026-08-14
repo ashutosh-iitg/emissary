@@ -2,8 +2,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from emissary.decision import ToolCall
-from emissary.tools import LocalToolExecutor, Tool, ToolRegistry, ToolResult
+from emissary.harness.tools import LocalToolExecutor, Tool, ToolRegistry, ToolResult
+from emissary.llm.decision import ToolCall
 
 
 def test_registry_rejects_duplicate_names_and_exposes_model_definitions():

@@ -24,17 +24,35 @@ def test_provider_sdks_are_imported_only_by_wire_adapters():
 
 
 def test_harness_core_does_not_depend_on_provider_registry_or_wires():
-    core = ["agent.py", "context.py", "events.py", "policy.py", "runner.py", "state.py", "tools.py"]
     violations = []
-    for name in core:
-        tree = ast.parse((PACKAGE / name).read_text())
+    for path in (PACKAGE / "harness").glob("*.py"):
+        tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module in {
-                "provider",
-                "wire",
-                ".provider",
-                ".wire",
-            }:
-                violations.append(name)
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module.endswith("provider") or ".wire" in node.module)
+            ):
+                violations.append(path.name)
+
+    assert violations == []
+
+
+def test_llm_layer_does_not_depend_on_harness_evaluation_or_storage():
+    violations = []
+    for path in (PACKAGE / "llm").rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.split(".")[0]
+                in {
+                    "harness",
+                    "eval",
+                    "storage",
+                }
+            ):
+                violations.append(str(path.relative_to(PACKAGE)))
 
     assert violations == []

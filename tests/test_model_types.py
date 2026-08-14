@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 import pytest
 
-from emissary.decision import (
+from emissary.llm.decision import (
     FinalOutput,
     ModelCapabilities,
     ModelResult,
@@ -15,7 +15,7 @@ from emissary.decision import (
     ToolDefinition,
     Usage,
 )
-from emissary.messages import AssistantMessage, TextBlock, ToolMessage, UserMessage
+from emissary.llm.messages import AssistantMessage, TextBlock, ToolMessage, UserMessage
 
 
 def test_text_blocks_preserve_cache_intent_without_provider_shapes():
