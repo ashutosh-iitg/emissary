@@ -3,7 +3,7 @@
 import pytest
 
 from emissary import ProviderError, parse_spec
-from emissary.calls import call_tool
+from emissary.llm.calls import call_tool
 
 TOOL = {"name": "record", "description": "d", "input_schema": {"type": "object"}}
 

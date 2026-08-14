@@ -13,8 +13,9 @@ than be handed a guess.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from .decision import ModelCapabilities
 from .errors import ProviderError
 
 
@@ -42,6 +43,7 @@ class Provider:
     # works without it (the logprobs are read the same way either way); it
     # just guarantees the sampled token is one of the labels.
     guided_choice: bool = False
+    capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
 
     def resolved_base_url(self) -> str | None:
         """The base URL to call, reading an env var for providers whose
@@ -58,6 +60,7 @@ PROVIDERS: dict[str, Provider] = {
         key_env="ANTHROPIC_API_KEY",
         default_model="claude-opus-5",
         strict=True,
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True),
     ),
     "openai": Provider(
         wire="openai",
@@ -65,24 +68,30 @@ PROVIDERS: dict[str, Provider] = {
         default_model=None,
         strict=True,
         max_tokens_field="max_completion_tokens",
+        capabilities=ModelCapabilities(
+            tool_calling=True, parallel_tool_calls=True, structured_output=True, logprobs=True
+        ),
     ),
     "kimi": Provider(
         wire="openai",
         key_env="MOONSHOT_API_KEY",
         base_url="https://api.moonshot.ai/v1",
         default_model="kimi-k3",
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
     ),
     "deepseek": Provider(
         wire="openai",
         key_env="DEEPSEEK_API_KEY",
         base_url="https://api.deepseek.com",
         default_model="deepseek-v4-pro",
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
     ),
     "gemini": Provider(
         wire="openai",
         key_env="GEMINI_API_KEY",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         default_model="gemini-3.6-flash",
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
     ),
     "vllm": Provider(
         wire="openai",
@@ -95,6 +104,7 @@ PROVIDERS: dict[str, Provider] = {
         base_url="http://localhost:8000/v1",
         default_model=None,
         guided_choice=True,
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
     ),
 }
 

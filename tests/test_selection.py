@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from emissary import CallResult, ProviderError, parse_spec, resolve_spec
-from emissary.selection import call_tool_with_fallback
+from emissary.llm.selection import call_tool_with_fallback
 
 PAYLOAD = {"title": "A law"}
 
@@ -51,7 +51,7 @@ class TestFallback:
     def test_an_availability_failure_reaches_the_fallback(self):
         outcomes = [ProviderError("overloaded", retryable=True), result("kimi", "kimi-k3")]
 
-        with patch("emissary.selection.call_tool", side_effect=outcomes):
+        with patch("emissary.llm.selection.call_tool", side_effect=outcomes):
             answered = _call(fallback="kimi")
 
         assert answered.provider == "kimi"
@@ -61,7 +61,7 @@ class TestFallback:
         provider. Trying another one only spends money to fail twice."""
         with (
             patch(
-                "emissary.selection.call_tool",
+                "emissary.llm.selection.call_tool",
                 side_effect=ProviderError("tool arguments were not valid JSON"),
             ) as called,
             pytest.raises(ProviderError),
@@ -76,7 +76,7 @@ class TestFallback:
         expensive silence."""
         with (
             patch(
-                "emissary.selection.call_tool",
+                "emissary.llm.selection.call_tool",
                 side_effect=ProviderError("overloaded", retryable=True),
             ) as called,
             pytest.raises(ProviderError),
@@ -92,7 +92,7 @@ class TestFallback:
         ]
 
         with (
-            patch("emissary.selection.call_tool", side_effect=outcomes),
+            patch("emissary.llm.selection.call_tool", side_effect=outcomes),
             pytest.raises(ProviderError) as caught,
         ):
             _call(fallback="kimi")
@@ -103,7 +103,7 @@ class TestFallback:
     def test_no_fallback_configured_means_one_attempt(self):
         with (
             patch(
-                "emissary.selection.call_tool",
+                "emissary.llm.selection.call_tool",
                 side_effect=ProviderError("overloaded", retryable=True),
             ) as called,
             pytest.raises(ProviderError),
@@ -115,7 +115,7 @@ class TestFallback:
     def test_the_same_provider_named_twice_is_not_a_fallback(self):
         with (
             patch(
-                "emissary.selection.call_tool",
+                "emissary.llm.selection.call_tool",
                 side_effect=ProviderError("overloaded", retryable=True),
             ) as called,
             pytest.raises(ProviderError),
@@ -127,7 +127,7 @@ class TestFallback:
     def test_a_successful_primary_call_returns_its_payload_untouched(self):
         """The wrapper returns the payload whatever it contains — judging it
         is the caller's job, not a reason to call again."""
-        with patch("emissary.selection.call_tool", return_value=result()) as called:
+        with patch("emissary.llm.selection.call_tool", return_value=result()) as called:
             answered = _call()
 
         assert called.call_count == 1

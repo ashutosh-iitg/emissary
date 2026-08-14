@@ -4,9 +4,20 @@ gemini, and vllm all speak this wire."""
 import json
 import math
 import os
+import re
 from typing import Any
 
+from ..decision import (
+    FinalOutput,
+    ModelResult,
+    ModelSettings,
+    ToolCall,
+    ToolCalls,
+    ToolDefinition,
+    Usage,
+)
 from ..errors import ProviderError, retryable_status
+from ..messages import AssistantMessage, Message, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult, ChoiceResult
 from .types import Block
@@ -37,6 +48,132 @@ def _client(spec: Spec):
 def _status_error(spec: Spec, exc) -> ProviderError:
     return ProviderError(
         f"{spec}: {exc.status_code} {exc}", retryable=retryable_status(exc.status_code)
+    )
+
+
+def _first_label_unit(label: str) -> str | None:
+    match = re.match(r"[A-Z0-9]+", label.strip().upper())
+    return match.group() if match else None
+
+
+def _validate_labels(spec: Spec, labels: list[str]) -> None:
+    if not labels:
+        raise ProviderError(f"{spec}: call_choice needs at least one label")
+
+    units: set[str] = set()
+    for label in labels:
+        unit = _first_label_unit(label)
+        if unit is None or unit in units:
+            raise ProviderError(
+                f"{spec}: labels must be non-empty and distinguishable by their first token"
+            )
+        units.add(unit)
+
+
+def _openai_messages(system: str, messages: tuple[Message, ...]) -> list[dict[str, Any]]:
+    translated: list[dict[str, Any]] = [{"role": "system", "content": system}]
+    for message in messages:
+        if isinstance(message, UserMessage):
+            translated.append(
+                {"role": "user", "content": "\n\n".join(block.text for block in message.content)}
+            )
+        elif isinstance(message, AssistantMessage):
+            item: dict[str, Any] = {"role": "assistant", "content": message.text}
+            if message.tool_calls:
+                item["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+                    }
+                    for call in message.tool_calls
+                ]
+            translated.append(item)
+        elif isinstance(message, ToolMessage):
+            translated.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": message.call_id,
+                    "content": message.content,
+                }
+            )
+    return translated
+
+
+def call_model(
+    spec: Spec,
+    *,
+    system: str,
+    messages: tuple[Message, ...],
+    tools: tuple[ToolDefinition, ...] = (),
+    settings: ModelSettings | None = None,
+) -> ModelResult:
+    """Execute one provider-neutral conversational model turn."""
+    import openai
+
+    provider = spec.provider
+    configured = settings or ModelSettings()
+    request_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema,
+                **({"strict": True} if provider.strict else {}),
+            },
+        }
+        for tool in tools
+    ]
+    kwargs: dict[str, Any] = {
+        "model": spec.model,
+        "messages": _openai_messages(system, messages),
+        provider.max_tokens_field: configured.max_output_tokens or MAX_TOKENS,
+    }
+    if request_tools:
+        kwargs["tools"] = request_tools
+        kwargs["tool_choice"] = configured.tool_choice
+
+    try:
+        response = _client(spec).chat.completions.create(**kwargs)
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    if not response.choices:
+        raise ProviderError(f"{spec}: no completion choice returned")
+    choice = response.choices[0]
+    message = choice.message
+    raw_calls = message.tool_calls or []
+    if raw_calls:
+        calls: list[ToolCall] = []
+        for raw_call in raw_calls:
+            try:
+                arguments = json.loads(raw_call.function.arguments)
+            except json.JSONDecodeError as exc:
+                raise ProviderError(f"{spec}: tool arguments were not valid JSON ({exc})") from exc
+            if not isinstance(arguments, dict):
+                raise ProviderError(f"{spec}: tool arguments were not a JSON object")
+            calls.append(ToolCall(raw_call.id, raw_call.function.name, arguments))
+        decision = ToolCalls(tuple(calls))
+    elif message.content:
+        decision = FinalOutput(text=message.content)
+    else:
+        raise ProviderError(f"{spec}: response contained no usable decision")
+
+    usage = response.usage
+    details = getattr(usage, "prompt_tokens_details", None)
+    return ModelResult(
+        decision=decision,
+        provider=spec.name,
+        model=response.model,
+        usage=Usage(
+            input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            cached_input_tokens=getattr(details, "cached_tokens", 0) or 0,
+        ),
+        finish_reason=choice.finish_reason,
     )
 
 
@@ -74,6 +211,8 @@ def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, A
     except openai.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    if not response.choices:
+        raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]
     calls = choice.message.tool_calls or []
     if not calls:
@@ -85,6 +224,8 @@ def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, A
         # Not retryable: the model answered, just unusably. Falling back here
         # would be shopping for a provider whose JSON happens to parse.
         raise ProviderError(f"{spec}: tool arguments were not valid JSON ({exc})") from exc
+    if not isinstance(payload, dict):
+        raise ProviderError(f"{spec}: tool arguments were not a JSON object")
 
     usage = response.usage
     details = getattr(usage, "prompt_tokens_details", None)
@@ -114,8 +255,7 @@ def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[st
     import openai
 
     provider = spec.provider
-    if not labels:
-        raise ProviderError(f"{spec}: call_choice needs at least one label")
+    _validate_labels(spec, labels)
 
     user_content = "\n\n".join(block["text"] for block in blocks)
     extra: dict[str, Any] = {}
@@ -143,6 +283,8 @@ def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[st
     except openai.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    if not response.choices:
+        raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]
     content = getattr(choice.logprobs, "content", None) if choice.logprobs else None
     if not content:
