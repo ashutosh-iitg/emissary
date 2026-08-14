@@ -13,6 +13,10 @@ class ProviderError(RuntimeError):
         self.retryable = retryable
 
 
+class CapabilityError(ProviderError):
+    """The selected model endpoint cannot provide a requested operation."""
+
+
 def retryable_status(status_code: int) -> bool:
     """Whether an HTTP status is worth asking a different provider about.
 

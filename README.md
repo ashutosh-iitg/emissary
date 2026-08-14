@@ -112,6 +112,60 @@ No test reaches a network — the wire adapters are tested against a mocked
 SDK client, and the fallback policy is tested by mocking the wire dispatch
 itself.
 
+## Agent harness
+
+The harness runs a bounded model → tool → observation loop through the same
+provider-neutral emissary caller. Harness code never imports a provider SDK,
+so any model registered behind the Anthropic or OpenAI-compatible wire can be
+used without changing the runner.
+
+```python
+import emissary
+
+
+def add(a: int, b: int) -> dict:
+    return {"sum": a + b}
+
+
+agent = emissary.Agent(
+    name="calculator",
+    instructions="Use the available tools and return the answer.",
+    tools=(
+        emissary.Tool(
+            name="add",
+            description="Add two integers.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "a": {"type": "integer"},
+                    "b": {"type": "integer"},
+                },
+                "required": ["a", "b"],
+                "additionalProperties": False,
+            },
+            execute=add,
+        ),
+    ),
+    limits=emissary.RunLimits(max_turns=6, max_tool_calls=4),
+)
+
+result = emissary.run(
+    agent,
+    "What is 19 + 23?",
+    caller=emissary.SpecModelCaller(emissary.parse_spec("vllm:my-model")),
+)
+
+if result.status is emissary.RunStatus.COMPLETED:
+    print(result.output)
+else:
+    print(result.stop_reason, result.events)
+```
+
+Tools are JSON-Schema validated before any call in a batch executes. Tools
+marked `approval="always"` require an injected approver; without one the run
+pauses before the effect. Every model call, proposed action, tool outcome, and
+terminal transition is represented in the run's ordered event trajectory.
+
 ## License
 
 [MIT](LICENSE) © ashutosh-iitg
