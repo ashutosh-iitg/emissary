@@ -17,6 +17,7 @@ from ..errors import ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult
+from ..streaming import StreamSink
 from .thinking import thinking_kwargs
 
 WIRE = "anthropic"
@@ -85,8 +86,14 @@ def call_model(
     messages: tuple[Message, ...],
     tools: tuple[ToolDefinition, ...] = (),
     settings: ModelSettings | None = None,
+    sink: StreamSink | None = None,
 ) -> ModelResult:
-    """Execute one provider-neutral conversational model turn."""
+    """Execute one provider-neutral conversational model turn.
+
+    With a `sink`, deltas are reported as they arrive and the SDK's accumulated
+    final message is normalized by the same code path as an unstreamed call —
+    so the two cannot disagree about what the model said (ADR-0022).
+    """
     import anthropic
 
     configured = settings or ModelSettings()
@@ -110,7 +117,7 @@ def call_model(
     kwargs.update(thinking_kwargs(spec, configured.thinking))
 
     try:
-        response = anthropic.Anthropic().messages.create(**kwargs)
+        response = _stream(anthropic, kwargs, sink) if sink else _create(anthropic, kwargs)
     except anthropic.APIStatusError as exc:
         raise ProviderError(
             f"{spec}: {exc.status_code} {exc.message}",
@@ -119,6 +126,32 @@ def call_model(
     except anthropic.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    return _normalize(spec, response)
+
+
+def _create(anthropic, kwargs: dict[str, Any]):
+    return anthropic.Anthropic().messages.create(**kwargs)
+
+
+def _stream(anthropic, kwargs: dict[str, Any], sink: StreamSink):
+    """Drain the stream for observation, then hand back the whole message.
+
+    `get_final_message()` reassembles thinking blocks with their signatures
+    intact, which hand-accumulating the deltas would not — the deltas carry the
+    text but not the signature.
+    """
+    with anthropic.Anthropic().messages.stream(**kwargs) as stream:
+        for event in stream:
+            if event.type != "content_block_delta":
+                continue
+            if event.delta.type == "text_delta":
+                sink.on_text(event.delta.text)
+            elif event.delta.type == "thinking_delta":
+                sink.on_thinking(event.delta.thinking)
+        return stream.get_final_message()
+
+
+def _normalize(spec: Spec, response) -> ModelResult:
     if response.stop_reason == "refusal":
         decision = Refusal("the model declined this request")
     else:

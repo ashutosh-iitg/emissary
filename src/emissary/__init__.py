@@ -34,6 +34,7 @@ from .llm.prompt import Prompt
 from .llm.provider import PROVIDERS, Provider, Spec, key_present, parse_spec
 from .llm.result import CallResult, ChoiceResult
 from .llm.selection import call_tool_with_fallback, resolve_spec
+from .llm.streaming import StreamSink
 from .storage import RunStore, SQLiteRunStore, deserialize_run, serialize_run
 
 __all__ = [
@@ -76,6 +77,7 @@ __all__ = [
     "Spec",
     "SpecModelCaller",
     "StopReason",
+    "StreamSink",
     "TextBlock",
     "Tool",
     "ToolCall",

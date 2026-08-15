@@ -3,7 +3,6 @@ gemini, and vllm all speak this wire."""
 
 import json
 import math
-import os
 import re
 from typing import Any
 
@@ -21,6 +20,7 @@ from ..errors import ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult, ChoiceResult
+from ..streaming import StreamSink
 from .thinking import thinking_kwargs
 
 WIRE = "openai"
@@ -39,7 +39,7 @@ def _client(spec: Spec):
     import openai
 
     provider = spec.provider
-    api_key = os.environ.get(provider.key_env) if provider.key_env else None
+    api_key = provider.credential.token()
     base_url = provider.resolved_base_url()
     return openai.OpenAI(
         # vLLM's OpenAI-compatible server doesn't validate the key, but the
@@ -118,8 +118,14 @@ def call_model(
     messages: tuple[Message, ...],
     tools: tuple[ToolDefinition, ...] = (),
     settings: ModelSettings | None = None,
+    sink: StreamSink | None = None,
 ) -> ModelResult:
-    """Execute one provider-neutral conversational model turn."""
+    """Execute one provider-neutral conversational model turn.
+
+    With a `sink`, deltas are reported as they arrive and the accumulated
+    completion is normalized by the same code path as an unstreamed call
+    (ADR-0022).
+    """
     import openai
 
     provider = spec.provider
@@ -148,13 +154,44 @@ def call_model(
     # a caller who asked for `off` is never quietly billed for reasoning.
     kwargs.update(thinking_kwargs(spec, configured.thinking))
 
+    streamed_reasoning: str | None = None
     try:
-        response = _client(spec).chat.completions.create(**kwargs)
+        if sink is not None:
+            response, streamed_reasoning = _stream(spec, kwargs, sink)
+        else:
+            response = _client(spec).chat.completions.create(**kwargs)
     except openai.APIStatusError as exc:
         raise _status_error(spec, exc) from exc
     except openai.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    return _normalize(spec, response, streamed_reasoning)
+
+
+def _stream(spec: Spec, kwargs: dict[str, Any], sink: StreamSink):
+    """Drain the stream, returning the accumulated completion and reasoning.
+
+    `reasoning_content` is a vendor extension, and the SDK accumulator promises
+    nothing about fields outside its own schema. Losing it here would not fail
+    here — it would 400 the *next* turn (ADR-0018), a long way from the cause —
+    so this wire accumulates it rather than trusting the snapshot.
+    """
+    reasoning: list[str] = []
+    with _client(spec).chat.completions.stream(**kwargs) as stream:
+        for event in stream:
+            if event.type != "chunk" or not event.chunk.choices:
+                continue
+            delta = event.chunk.choices[0].delta
+            fragment = getattr(delta, "reasoning_content", None)
+            if fragment:
+                reasoning.append(fragment)
+                sink.on_thinking(fragment)
+            if getattr(delta, "content", None):
+                sink.on_text(delta.content)
+        return stream.get_final_completion(), "".join(reasoning) or None
+
+
+def _normalize(spec: Spec, response, streamed_reasoning: str | None = None) -> ModelResult:
     if not response.choices:
         raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]
@@ -178,7 +215,7 @@ def call_model(
 
     # Captured whether or not it was requested: a server that volunteered this
     # stated a fact, and the record keeps what arrived (ADR-0019).
-    thinking = getattr(message, "reasoning_content", None) or None
+    thinking = streamed_reasoning or getattr(message, "reasoning_content", None) or None
     reasoning = (
         ReasoningState(wire=WIRE, blocks=({"reasoning_content": thinking},))
         if thinking is not None

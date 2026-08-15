@@ -5,6 +5,7 @@ Gemini earns a native adapter because the OpenAI-compatibility layer drops
 (ADR-0020). The signature tests below are the reason this module exists.
 """
 
+import builtins
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -183,6 +184,25 @@ def test_thinking_control_is_refused_where_the_provider_cannot_express_it():
             messages=MESSAGES,
             settings=ModelSettings(thinking="visible"),
         )
+
+
+def test_a_missing_gemini_sdk_says_how_to_install_it(monkeypatch):
+    """`google-genai` is an optional extra, so its absence is a configuration
+    state a caller can fix — not a package defect, which is how a bare
+    ModuleNotFoundError from inside a wire reads."""
+    real_import = builtins.__import__
+
+    def without_genai(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "google" and "genai" in (fromlist or ()):
+            raise ImportError("No module named 'google.genai'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    # `sys.modules` patching does not reach it: `google` is already imported,
+    # so `from google import genai` resolves the attribute without a lookup.
+    monkeypatch.setattr(builtins, "__import__", without_genai)
+
+    with pytest.raises(CapabilityError, match=r"gemini.*extra"):
+        gemini.call_model(parse_spec("gemini"), system="s", messages=MESSAGES)
 
 
 def test_api_key_credential_reports_presence_and_value(monkeypatch):

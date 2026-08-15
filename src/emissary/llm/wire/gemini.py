@@ -26,9 +26,10 @@ from ..decision import (
     ToolDefinition,
     Usage,
 )
-from ..errors import ProviderError, retryable_status
+from ..errors import CapabilityError, ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
+from ..streaming import StreamSink
 from .thinking import thinking_kwargs
 
 WIRE = "gemini"
@@ -44,8 +45,26 @@ completion would let a caller treat a content block as a real answer.
 """
 
 
+def _sdk():
+    """The Gemini SDK, or an error that says how to get it.
+
+    `google-genai` is an optional extra: it pulls in sixteen transitive
+    packages that an Anthropic-only or OpenAI-only caller never needs. A bare
+    `ModuleNotFoundError` from inside a wire would read as a package defect
+    rather than a missing install, so it is translated here.
+    """
+    try:
+        from google import genai
+    except ImportError as exc:
+        raise CapabilityError(
+            "the gemini and vertex providers need the optional Gemini SDK — "
+            "install emissary with the 'gemini' extra (pip install 'emissary[gemini]')"
+        ) from exc
+    return genai
+
+
 def _client(spec: Spec):
-    from google import genai
+    genai = _sdk()
 
     credential = spec.provider.credential
     if isinstance(credential, GoogleADC):
@@ -137,9 +156,15 @@ def call_model(
     messages: tuple[Message, ...],
     tools: tuple[ToolDefinition, ...] = (),
     settings: ModelSettings | None = None,
+    sink: StreamSink | None = None,
 ) -> ModelResult:
-    """Execute one provider-neutral conversational model turn."""
-    from google.genai import errors
+    """Execute one provider-neutral conversational model turn.
+
+    With a `sink`, chunks are merged as they arrive. This SDK accumulates
+    nothing, so the merge lives here — and shares `_normalize` with the
+    unstreamed path so the two cannot disagree (ADR-0022).
+    """
+    errors = _sdk().errors
 
     configured = settings or ModelSettings()
     config: dict[str, Any] = {
@@ -165,28 +190,80 @@ def call_model(
             config["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
     config.update(thinking_kwargs(spec, configured.thinking))
 
+    request = {
+        "model": spec.model,
+        "contents": _gemini_contents(messages),
+        "config": config,
+    }
     try:
-        response = _client(spec).models.generate_content(
-            model=spec.model, contents=_gemini_contents(messages), config=config
-        )
+        if sink is not None:
+            return _stream(spec, request, sink)
+        response = _client(spec).models.generate_content(**request)
     except errors.APIError as exc:
         raise ProviderError(
             f"{spec}: {exc.code} {exc.message}", retryable=retryable_status(exc.code)
         ) from exc
 
-    return _normalize(spec, response)
+    return _normalize(spec, *_unpack(spec, response))
 
 
-def _normalize(spec: Spec, response) -> ModelResult:
+def _unpack(spec: Spec, response) -> tuple[tuple[dict[str, Any], ...], Any, Any, str]:
     if not response.candidates:
         raise ProviderError(f"{spec}: no candidate returned")
     candidate = response.candidates[0]
     finish = getattr(candidate, "finish_reason", None)
-    finish_reason = getattr(finish, "value", finish)
-
     parts = list(getattr(candidate.content, "parts", None) or []) if candidate.content else []
-    blocks = tuple(_part_data(part) for part in parts)
+    return (
+        tuple(_part_data(part) for part in parts),
+        getattr(finish, "value", finish),
+        response.usage_metadata,
+        getattr(response, "model_version", None) or spec.model,
+    )
 
+
+def _absorb(blocks: list[dict[str, Any]], block: dict[str, Any]) -> None:
+    """Fold a streamed part into the accumulating list.
+
+    Consecutive text parts of the same kind are one block once complete, which
+    is how the unstreamed response already arrives. A signature may land on any
+    fragment of the run it belongs to, so the first one seen is kept.
+    """
+    previous = blocks[-1] if blocks else None
+    mergeable = (
+        previous is not None
+        and "function_call" not in previous
+        and "function_call" not in block
+        and "text" in previous
+        and "text" in block
+        and previous.get("thought") == block.get("thought")
+    )
+    if not mergeable:
+        blocks.append(dict(block))
+        return
+    previous["text"] += block["text"]
+    if "thought_signature" in block and "thought_signature" not in previous:
+        previous["thought_signature"] = block["thought_signature"]
+
+
+def _stream(spec: Spec, request: dict[str, Any], sink: StreamSink) -> ModelResult:
+    blocks: list[dict[str, Any]] = []
+    finish_reason = usage = None
+    model = spec.model
+    for chunk in _client(spec).models.generate_content_stream(**request):
+        chunk_blocks, chunk_finish, chunk_usage, chunk_model = _unpack(spec, chunk)
+        for block in chunk_blocks:
+            text = block.get("text")
+            if text:
+                sink.on_thinking(text) if block.get("thought") else sink.on_text(text)
+            _absorb(blocks, block)
+        # Later chunks carry the authoritative stop reason and cumulative usage.
+        finish_reason = chunk_finish or finish_reason
+        usage = chunk_usage or usage
+        model = chunk_model or model
+    return _normalize(spec, tuple(blocks), finish_reason, usage, model)
+
+
+def _normalize(spec: Spec, blocks, finish_reason, usage, model: str) -> ModelResult:
     if finish_reason in BLOCKED_FINISH_REASONS:
         decision = Refusal(f"the model was stopped by {finish_reason}")
     else:
@@ -223,11 +300,10 @@ def _normalize(spec: Spec, response) -> ModelResult:
         else None
     )
 
-    usage = response.usage_metadata
     return ModelResult(
         decision=decision,
         provider=spec.name,
-        model=getattr(response, "model_version", None) or spec.model,
+        model=model,
         usage=Usage(
             input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
             output_tokens=getattr(usage, "candidates_token_count", 0) or 0,

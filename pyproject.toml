@@ -1,7 +1,7 @@
 [project]
 name = "emissary"
 version = "0.1.0"
-description = "A small, provider-agnostic wrapper over LLM APIs — Anthropic native and OpenAI-compatible wire formats, including local vLLM servers."
+description = "A small, provider-agnostic wrapper over LLM APIs — Anthropic native, Gemini, and OpenAI-compatible wire formats, including local vLLM servers."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -11,9 +11,17 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.120.2",
-    "google-genai>=2.18.1",
     "jsonschema>=4.25.0",
     "openai>=2.53.0",
+]
+
+# Gemini and Vertex only. Kept out of the base install because `google-genai`
+# pulls in 16 transitive packages (google-auth, cryptography, requests), and
+# neither current consumer uses those providers. The other two SDKs stay
+# required because every install reaches at least one of them.
+[project.optional-dependencies]
+gemini = [
+    "google-genai>=2.18.1",
 ]
 
 [dependency-groups]
@@ -21,6 +29,8 @@ dev = [
     "black>=26.5.1",
     "pytest>=8.3.0",
     "ruff>=0.16.0",
+    # The suite covers every wire, so the optional SDK is required to test.
+    "google-genai>=2.18.1",
 ]
 
 [tool.ruff]

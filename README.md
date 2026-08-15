@@ -84,6 +84,16 @@ Labels must differ in their **first token** — they're matched by prefix, so
 hosted, open-weight model — no credential required by default, since vLLM's
 server doesn't authenticate unless you put something in front of it.
 
+The Gemini SDK is an **optional extra** — it pulls in sixteen transitive
+packages that an Anthropic-only or OpenAI-only caller never needs:
+
+```bash
+pip install 'emissary[gemini]'      # or: uv add 'emissary[gemini]'
+```
+
+Without it, `gemini` and `vertex` raise a `CapabilityError` naming the extra.
+Every other provider works from the base install.
+
 `vertex` reaches the same models as `gemini` through GCP: application default
 credentials instead of an API key, and a project and region instead of a base
 URL. `key_present(spec)` answers for either without spending a request.
@@ -111,6 +121,28 @@ thought signatures, DeepSeek and Kimi `reasoning_content`. All three APIs
 reject a follow-up turn that loses it, so the harness replays it verbatim and
 never inspects it. It is tagged with the wire that issued it, so a fallback to
 a different provider drops it rather than forwarding something unparseable.
+
+## Streaming
+
+Pass a sink to watch a turn arrive. The call still returns one complete
+`ModelResult` — streaming is an observation channel, not a second result type
+(ADR-0022), so nothing downstream of the wire changes:
+
+```python
+class Printer:
+    def on_text(self, delta): print(delta, end="", flush=True)
+    def on_thinking(self, delta): print(delta, end="", flush=True)
+
+result = emissary.call_model(spec, system=..., messages=..., sink=Printer())
+```
+
+Omit `sink` and the request is byte-identical to a non-streaming one. Only text
+and reasoning are streamed: tool-call arguments arrive as JSON fragments that
+mean nothing until complete, so they reach you whole on `result.decision`.
+
+A sink is called synchronously inside the read loop, and an exception from it
+is **not** caught — a silently frozen display is harder to diagnose than a loud
+failure.
 
 ## Selection and fallback
 

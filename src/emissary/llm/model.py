@@ -7,6 +7,7 @@ from .decision import ModelResult, ModelSettings, ToolDefinition
 from .errors import CapabilityError, ProviderError
 from .messages import Message
 from .provider import Spec, key_present
+from .streaming import StreamSink
 from .wire import WIRES
 
 
@@ -18,6 +19,7 @@ class ModelCaller(Protocol):
         messages: tuple[Message, ...],
         tools: tuple[ToolDefinition, ...] = (),
         settings: ModelSettings | None = None,
+        sink: StreamSink | None = None,
     ) -> ModelResult: ...
 
 
@@ -28,8 +30,13 @@ def call_model(
     messages: tuple[Message, ...],
     tools: tuple[ToolDefinition, ...] = (),
     settings: ModelSettings | None = None,
+    sink: StreamSink | None = None,
 ) -> ModelResult:
-    """Execute one normalized model turn through the selected wire."""
+    """Execute one normalized model turn through the selected wire.
+
+    A `sink` streams deltas as they arrive; the result is the same complete
+    `ModelResult` either way (ADR-0022).
+    """
     if not key_present(spec):
         raise ProviderError(
             f"{spec.provider.credential.describe()} is not configured for provider {spec.name!r}"
@@ -43,7 +50,7 @@ def call_model(
     ):
         raise CapabilityError(f"{spec}: this provider does not support thinking control")
     return WIRES[spec.provider.wire].call_model(
-        spec, system=system, messages=messages, tools=tools, settings=settings
+        spec, system=system, messages=messages, tools=tools, settings=settings, sink=sink
     )
 
 
@@ -58,9 +65,10 @@ class SpecModelCaller:
         messages: tuple[Message, ...],
         tools: tuple[ToolDefinition, ...] = (),
         settings: ModelSettings | None = None,
+        sink: StreamSink | None = None,
     ) -> ModelResult:
         return call_model(
-            self.spec, system=system, messages=messages, tools=tools, settings=settings
+            self.spec, system=system, messages=messages, tools=tools, settings=settings, sink=sink
         )
 
 
@@ -76,6 +84,7 @@ class FallbackModelCaller:
         messages: tuple[Message, ...],
         tools: tuple[ToolDefinition, ...] = (),
         settings: ModelSettings | None = None,
+        sink: StreamSink | None = None,
     ) -> ModelResult:
         try:
             return call_model(
@@ -84,6 +93,7 @@ class FallbackModelCaller:
                 messages=messages,
                 tools=tools,
                 settings=settings,
+                sink=sink,
             )
         except ProviderError as first:
             if (
@@ -93,12 +103,17 @@ class FallbackModelCaller:
             ):
                 raise
             try:
+                # The sink may already have seen a partial answer from the
+                # primary. That is the caller's to reconcile: emissary cannot
+                # unsay deltas, and hiding the second attempt's stream would be
+                # worse than a visible restart.
                 return call_model(
                     self.fallback,
                     system=system,
                     messages=messages,
                     tools=tools,
                     settings=settings,
+                    sink=sink,
                 )
             except ProviderError as second:
                 raise ProviderError(f"{first}; fallback {second}") from second

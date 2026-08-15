@@ -31,6 +31,7 @@ def test_implementation_is_grouped_by_single_responsibility():
         "llm/prompt.py",
         "llm/decision.py",
         "llm/credentials.py",
+        "llm/streaming.py",
         "llm/wire/anthropic.py",
         "llm/wire/gemini.py",
         "llm/wire/openai_compatible.py",

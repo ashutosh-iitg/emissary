@@ -20,6 +20,7 @@ from .prompt import Prompt
 from .provider import PROVIDERS, Provider, Spec, key_present, parse_spec
 from .result import CallResult, ChoiceResult
 from .selection import call_tool_with_fallback, resolve_spec
+from .streaming import StreamSink
 
 __all__ = [
     "PROVIDERS",
@@ -41,6 +42,7 @@ __all__ = [
     "Refusal",
     "Spec",
     "SpecModelCaller",
+    "StreamSink",
     "TextBlock",
     "ToolCall",
     "ToolCalls",
