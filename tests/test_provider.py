@@ -35,15 +35,22 @@ def test_an_unknown_provider_is_refused_with_the_list():
         parse_spec("llama")
 
 
-def test_five_of_six_providers_share_one_wire_format():
-    """The reason this wrapper is small enough to be worth having: it is two
-    adapters and a table, not six integrations."""
-    wires = {name: p.wire for name, p in PROVIDERS.items()}
+def test_providers_outnumber_wires_by_more_than_two_to_one():
+    """The reason this wrapper is small enough to be worth having: it is a few
+    adapters and a table, not one integration per vendor.
 
-    assert wires["anthropic"] == "anthropic"
-    assert {wires["openai"], wires["kimi"], wires["deepseek"], wires["gemini"], wires["vllm"]} == {
-        "openai"
-    }
+    A native wire is earned only when the compatibility layer loses a capability
+    the harness needs (ADR-0020) — Gemini's dropped thought signatures did;
+    DeepSeek and Kimi, whose first-party API *is* OpenAI-compatible, did not.
+    If this ratio ever approaches 1:1 the abstraction has stopped paying for
+    itself and should be reconsidered rather than extended.
+    """
+    wires = {provider.wire for provider in PROVIDERS.values()}
+
+    assert len(PROVIDERS) >= 2 * len(wires) + 1
+    assert PROVIDERS["anthropic"].wire == "anthropic"
+    assert PROVIDERS["gemini"].wire == PROVIDERS["vertex"].wire == "gemini"
+    assert {PROVIDERS[name].wire for name in ("openai", "kimi", "deepseek", "vllm")} == {"openai"}
 
 
 def test_only_first_party_providers_claim_strict_function_calling():
@@ -53,7 +60,8 @@ def test_only_first_party_providers_claim_strict_function_calling():
     assert PROVIDERS["openai"].strict
     assert not PROVIDERS["kimi"].strict
     assert not PROVIDERS["deepseek"].strict
-    assert not PROVIDERS["gemini"].strict
+    # Gemini is deliberately absent: `strict` is an OpenAI-wire function-calling
+    # flag and means nothing on `generateContent`.
     assert not PROVIDERS["vllm"].strict
 
 

@@ -1,19 +1,24 @@
 """Bounded synchronous plan/act/observe state machine."""
 
-import json
 import uuid
-from dataclasses import asdict
 
 from ..llm.decision import FinalOutput, Refusal, ToolCalls, Usage
 from ..llm.errors import ProviderError
-from ..llm.messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
+from ..llm.messages import TextBlock, UserMessage
 from ..llm.model import ModelCaller
 from .agent import Agent
 from .context import CompleteHistory, ContextPolicy
 from .events import EventSink, InMemoryEventSink, RunEvent, new_event
 from .policy import ApprovalDecision, Approver, approval_for
+from .projection import (
+    context_op_data,
+    derive_messages,
+    model_result_data,
+    tool_result_data,
+    user_message_data,
+)
 from .state import RunResult, RunStatus, StopReason
-from .tools import LocalToolExecutor, ToolExecutor, ToolRegistry
+from .tools import LocalToolExecutor, ToolContext, ToolExecutor, ToolRegistry, ToolResult
 
 
 def run(
@@ -35,11 +40,12 @@ def run(
     sink = event_sink or InMemoryEventSink()
     context = context_policy or CompleteHistory()
     registry = ToolRegistry(agent.tools)
-    messages: tuple[Message, ...] = (UserMessage((TextBlock(task),)),)
     events: list[RunEvent] = []
     usage = Usage(0, 0)
     tool_count = 0
     consecutive_errors = 0
+    tool_failures: dict[str, int] = {}
+    open_circuits: set[str] = set()
 
     def emit(kind: str, **data) -> None:
         event = new_event(run_id, len(events) + 1, kind, **data)
@@ -51,15 +57,26 @@ def run(
     ) -> RunResult:
         kind = "run_completed" if status is RunStatus.COMPLETED else "run_stopped"
         emit(kind, status=status.value, reason=reason.value)
-        return RunResult(run_id, status, reason, output, usage, messages, tuple(events))
+        return RunResult(run_id, status, reason, output, usage, tuple(events))
 
     emit("run_started", agent=agent.name)
+    emit("user_message", **user_message_data(UserMessage((TextBlock(task),))))
+
     for turn in range(agent.limits.max_turns):
+        surface = derive_messages(events)
+        ops = context.plan(surface)
+        if ops:
+            for op in ops:
+                emit("context_compacted", **context_op_data(op))
+            # Re-fold rather than apply locally: the surface the model sees comes
+            # from exactly one code path, so runner and projection cannot drift.
+            surface = derive_messages(events)
+
         emit("model_call_started", turn=turn + 1)
         try:
             model_result = caller(
                 system=agent.instructions,
-                messages=context.select(messages),
+                messages=surface,
                 tools=registry.definitions,
                 settings=agent.model_settings,
             )
@@ -72,7 +89,7 @@ def run(
             usage.output_tokens + model_result.usage.output_tokens,
             usage.cached_input_tokens + model_result.usage.cached_input_tokens,
         )
-        emit("model_call_completed", decision=type(model_result.decision).__name__)
+        emit("model_call_completed", **model_result_data(model_result))
         if (
             agent.limits.max_input_tokens is not None
             and usage.input_tokens > agent.limits.max_input_tokens
@@ -106,7 +123,6 @@ def run(
                 return finish(RunStatus.FAILED, StopReason.INVALID_TOOL)
             resolved.append((call, tool))
 
-        messages += (AssistantMessage(tool_calls=decision.calls),)
         for call, tool in resolved:
             approval = approval_for(call, tool, approver)
             emit("approval_resolved", call_id=call.id, decision=approval.value)
@@ -114,18 +130,38 @@ def run(
                 return finish(RunStatus.PAUSED, StopReason.APPROVAL_REQUIRED)
             if approval is ApprovalDecision.REJECT:
                 return finish(RunStatus.STOPPED, StopReason.APPROVAL_REJECTED)
-            emit("tool_call_started", call_id=call.id, tool=call.name)
-            outcome = active_executor.execute(call, tool)
+            if call.name in open_circuits:
+                outcome = ToolResult(
+                    "error", f"{call.name} is unavailable after repeated failures in this run"
+                )
+            else:
+                emit("tool_call_started", call_id=call.id, tool=call.name)
+                for attempt in range(1, tool.max_attempts + 1):
+                    outcome = active_executor.execute(call, tool, ToolContext(run_id, attempt))
+                    # `max_attempts > 1` already implies idempotent (Tool rejects
+                    # otherwise), so a retryable failure is safe to repeat here.
+                    if not outcome.retryable or attempt == tool.max_attempts:
+                        break
+                    emit(
+                        "tool_call_retried",
+                        call_id=call.id,
+                        attempt=attempt,
+                        reason=outcome.summary,
+                    )
+                if outcome.status == "error":
+                    tool_failures[call.name] = tool_failures.get(call.name, 0) + 1
+                    if tool_failures[call.name] >= agent.limits.max_tool_failures:
+                        open_circuits.add(call.name)
+                        emit(
+                            "tool_circuit_opened",
+                            tool=call.name,
+                            failures=tool_failures[call.name],
+                        )
+                else:
+                    tool_failures[call.name] = 0
             tool_count += 1
             consecutive_errors = consecutive_errors + 1 if outcome.status == "error" else 0
-            emit("tool_call_completed", call_id=call.id, status=outcome.status)
-            messages += (
-                ToolMessage(
-                    call_id=call.id,
-                    tool_name=call.name,
-                    content=json.dumps(asdict(outcome), sort_keys=True),
-                ),
-            )
+            emit("tool_call_completed", **tool_result_data(call, outcome))
             if consecutive_errors >= agent.limits.max_consecutive_tool_errors:
                 return finish(RunStatus.STOPPED, StopReason.MAX_TOOL_ERRORS)
 

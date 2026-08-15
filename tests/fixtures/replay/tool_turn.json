@@ -1,0 +1,159 @@
+{
+  "events": [
+    {
+      "data": {
+        "agent": "calculator"
+      },
+      "kind": "run_started",
+      "occurred_at": "2026-08-15T11:24:43.502614+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 1
+    },
+    {
+      "data": {
+        "content": [
+          {
+            "cache": false,
+            "text": "what is 2 + 3?"
+          }
+        ]
+      },
+      "kind": "user_message",
+      "occurred_at": "2026-08-15T11:24:43.502766+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 2
+    },
+    {
+      "data": {
+        "turn": 1
+      },
+      "kind": "model_call_started",
+      "occurred_at": "2026-08-15T11:24:43.502774+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 3
+    },
+    {
+      "data": {
+        "decision": {
+          "calls": [
+            {
+              "arguments": {
+                "a": 2,
+                "b": 3
+              },
+              "id": "one",
+              "name": "add"
+            }
+          ],
+          "kind": "tool_calls"
+        },
+        "finish_reason": "stop",
+        "model": "scripted",
+        "provider": "fake",
+        "usage": {
+          "cached_input_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 1
+        }
+      },
+      "kind": "model_call_completed",
+      "occurred_at": "2026-08-15T11:24:43.502786+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 4
+    },
+    {
+      "data": {
+        "call_id": "one",
+        "decision": "allow"
+      },
+      "kind": "approval_resolved",
+      "occurred_at": "2026-08-15T11:24:43.502804+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 5
+    },
+    {
+      "data": {
+        "call_id": "one",
+        "tool": "add"
+      },
+      "kind": "tool_call_started",
+      "occurred_at": "2026-08-15T11:24:43.502806+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 6
+    },
+    {
+      "data": {
+        "call_id": "one",
+        "result": {
+          "artifacts": [],
+          "content": {
+            "sum": 5
+          },
+          "retryable": false,
+          "status": "success",
+          "summary": "add completed",
+          "timed_out": false
+        },
+        "status": "success",
+        "tool": "add"
+      },
+      "kind": "tool_call_completed",
+      "occurred_at": "2026-08-15T11:24:43.502848+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 7
+    },
+    {
+      "data": {
+        "turn": 2
+      },
+      "kind": "model_call_started",
+      "occurred_at": "2026-08-15T11:24:43.502865+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 8
+    },
+    {
+      "data": {
+        "decision": {
+          "kind": "final_output",
+          "text": "5",
+          "value": null
+        },
+        "finish_reason": "stop",
+        "model": "scripted",
+        "provider": "fake",
+        "usage": {
+          "cached_input_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 1
+        }
+      },
+      "kind": "model_call_completed",
+      "occurred_at": "2026-08-15T11:24:43.502873+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 9
+    },
+    {
+      "data": {
+        "reason": "completed",
+        "status": "completed"
+      },
+      "kind": "run_completed",
+      "occurred_at": "2026-08-15T11:24:43.502877+00:00",
+      "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+      "sequence": 10
+    }
+  ],
+  "output": {
+    "text": "5",
+    "value": null
+  },
+  "run_id": "e0210e9aa0024dd195a2cf3241a4d962",
+  "schema_version": 2,
+  "status": "completed",
+  "stop_reason": "completed",
+  "usage": {
+    "cached_input_tokens": 0,
+    "input_tokens": 4,
+    "output_tokens": 2
+  }
+}

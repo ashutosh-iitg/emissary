@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from emissary import ProviderError, parse_spec
+from emissary.llm.messages import TextBlock
 from emissary.llm.wire.openai_compatible import call_tool
 
 TOOL = {"name": "record", "description": "d", "input_schema": {"type": "object"}}
@@ -37,7 +38,7 @@ def test_call_tool_returns_the_parsed_tool_arguments():
     call = SimpleNamespace(function=SimpleNamespace(arguments=json.dumps({"a": 1})))
     response = _response(tool_calls=[call])
     with _mock_client(response):
-        out = call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        out = call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
     assert out.payload == {"a": 1}
     assert out.provider == "kimi"
@@ -50,7 +51,7 @@ def test_blocks_are_concatenated_with_no_cache_control():
         call_tool(
             parse_spec("kimi"),
             system="s",
-            blocks=[{"text": "doc", "cache": True}, {"text": "instr", "cache": False}],
+            blocks=(TextBlock("doc", cache=True), TextBlock("instr")),
             tool=TOOL,
         )
 
@@ -61,7 +62,7 @@ def test_blocks_are_concatenated_with_no_cache_control():
 def test_no_tool_call_raises():
     response = _response(tool_calls=None, finish_reason="stop")
     with _mock_client(response), pytest.raises(ProviderError, match="no record call"):
-        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
 
 def test_unparseable_tool_arguments_are_not_retryable():
@@ -70,7 +71,7 @@ def test_unparseable_tool_arguments_are_not_retryable():
     call = SimpleNamespace(function=SimpleNamespace(arguments="not json"))
     response = _response(tool_calls=[call])
     with _mock_client(response), pytest.raises(ProviderError) as caught:
-        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
     assert not caught.value.retryable
 
@@ -81,7 +82,7 @@ def test_non_object_tool_arguments_are_rejected():
     call = SimpleNamespace(function=SimpleNamespace(arguments='["not", "an", "object"]'))
     response = _response(tool_calls=[call])
     with _mock_client(response), pytest.raises(ProviderError, match="JSON object") as caught:
-        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
     assert not caught.value.retryable
 
@@ -90,7 +91,7 @@ def test_an_empty_choices_response_is_reported_as_a_provider_error():
     response = SimpleNamespace(choices=[], model="kimi-k3", usage=None)
 
     with _mock_client(response), pytest.raises(ProviderError, match="no completion choice"):
-        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
 
 def test_server_errors_are_retryable_client_errors_are_not():
@@ -102,14 +103,14 @@ def test_server_errors_are_retryable_client_errors_are_not():
         "overloaded", response=httpx.Response(503, request=request), body=None
     )
     with _mock_client(side_effect=overloaded), pytest.raises(ProviderError) as caught:
-        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
     assert caught.value.retryable
 
     bad_request = openai.APIStatusError(
         "bad request", response=httpx.Response(400, request=request), body=None
     )
     with _mock_client(side_effect=bad_request), pytest.raises(ProviderError) as caught:
-        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
     assert not caught.value.retryable
 
 
@@ -118,14 +119,14 @@ def test_strict_is_only_sent_for_first_party_providers():
     response = _response(tool_calls=[call])
 
     with _mock_client(response) as ctor:
-        call_tool(parse_spec("openai:gpt-5"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("openai:gpt-5"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
         sent_openai = ctor.return_value.chat.completions.create.call_args.kwargs["tools"][0][
             "function"
         ]
     assert sent_openai["strict"] is True
 
     with _mock_client(response) as ctor:
-        call_tool(parse_spec("kimi"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("kimi"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
         sent_kimi = ctor.return_value.chat.completions.create.call_args.kwargs["tools"][0][
             "function"
         ]
@@ -139,7 +140,7 @@ def test_vllm_uses_a_placeholder_key_when_none_is_set(monkeypatch):
 
     with patch("openai.OpenAI", return_value=MagicMock()) as ctor:
         ctor.return_value.chat.completions.create.return_value = response
-        call_tool(parse_spec("vllm:qwen3-8b"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("vllm:qwen3-8b"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
     assert ctor.call_args.kwargs["api_key"] == "not-required"
     assert ctor.call_args.kwargs["base_url"] == "http://localhost:8000/v1"

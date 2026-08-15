@@ -6,6 +6,7 @@ from enum import Enum
 from ..llm.decision import FinalOutput, Usage
 from ..llm.messages import Message
 from .events import RunEvent
+from .projection import derive_messages
 
 
 class RunStatus(str, Enum):
@@ -38,8 +39,18 @@ class RunResult:
     stop_reason: StopReason
     output: FinalOutput | None
     usage: Usage
-    messages: tuple[Message, ...]
     events: tuple[RunEvent, ...]
+
+    @property
+    def messages(self) -> tuple[Message, ...]:
+        """The final model-visible surface, re-derived from the log on access.
+
+        Not stored, so it cannot disagree with ``events``. Under a trimming
+        policy this is the surface the model last saw, not the whole history —
+        that is ``derive_messages(events, apply_ops=False)``. Bind it to a local
+        before iterating; every access re-folds the log.
+        """
+        return derive_messages(self.events)
 
 
 __all__ = ["RunResult", "RunStatus", "StopReason"]

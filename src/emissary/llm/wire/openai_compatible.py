@@ -3,7 +3,6 @@ gemini, and vllm all speak this wire."""
 
 import json
 import math
-import os
 import re
 from typing import Any
 
@@ -11,16 +10,21 @@ from ..decision import (
     FinalOutput,
     ModelResult,
     ModelSettings,
+    ReasoningState,
     ToolCall,
     ToolCalls,
     ToolDefinition,
     Usage,
 )
 from ..errors import ProviderError, retryable_status
-from ..messages import AssistantMessage, Message, ToolMessage, UserMessage
+from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult, ChoiceResult
-from .types import Block
+from ..streaming import AsyncStreamSink, StreamSink
+from .thinking import thinking_kwargs
+
+WIRE = "openai"
+"""Tags reasoning state this wire issues, so no other wire replays it."""
 
 TOP_LOGPROBS = 20
 """How many alternatives to ask for at the scored position.
@@ -31,13 +35,14 @@ OpenAI-compatible wire accepts, and the cost is negligible — one position.
 """
 
 
-def _client(spec: Spec):
+def _client(spec: Spec, *, is_async: bool = False):
     import openai
 
     provider = spec.provider
-    api_key = os.environ.get(provider.key_env) if provider.key_env else None
+    api_key = provider.credential.token()
     base_url = provider.resolved_base_url()
-    return openai.OpenAI(
+    factory = openai.AsyncOpenAI if is_async else openai.OpenAI
+    return factory(
         # vLLM's OpenAI-compatible server doesn't validate the key, but the
         # SDK still requires a non-empty string to construct a client.
         api_key=api_key or "not-required",
@@ -79,6 +84,13 @@ def _openai_messages(system: str, messages: tuple[Message, ...]) -> list[dict[st
             )
         elif isinstance(message, AssistantMessage):
             item: dict[str, Any] = {"role": "assistant", "content": message.text}
+            # DeepSeek and Kimi reject the next turn outright when thinking mode
+            # is on and this is missing: "reasoning_content in thinking mode
+            # must be passed back to the API". Rebuilding history without it is
+            # the documented way OpenAI-compatible clients break on turn two.
+            if message.reasoning is not None and message.reasoning.wire == WIRE:
+                for block in message.reasoning.blocks:
+                    item.update(block)
             if message.tool_calls:
                 item["tool_calls"] = [
                     {
@@ -107,10 +119,66 @@ def call_model(
     messages: tuple[Message, ...],
     tools: tuple[ToolDefinition, ...] = (),
     settings: ModelSettings | None = None,
+    sink: StreamSink | None = None,
 ) -> ModelResult:
-    """Execute one provider-neutral conversational model turn."""
+    """Execute one provider-neutral conversational model turn.
+
+    With a `sink`, deltas are reported as they arrive and the accumulated
+    completion is normalized by the same code path as an unstreamed call
+    (ADR-0022).
+    """
     import openai
 
+    kwargs = _request(spec, system, messages, tools, settings)
+    streamed_reasoning: str | None = None
+    try:
+        if sink is not None:
+            response, streamed_reasoning = _stream(spec, kwargs, sink)
+        else:
+            response = _client(spec).chat.completions.create(**kwargs)
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize(spec, response, streamed_reasoning)
+
+
+async def acall_model(
+    spec: Spec,
+    *,
+    system: str,
+    messages: tuple[Message, ...],
+    tools: tuple[ToolDefinition, ...] = (),
+    settings: ModelSettings | None = None,
+    sink: AsyncStreamSink | None = None,
+) -> ModelResult:
+    """`call_model` on the async client — same request, same normalisation."""
+    import openai
+
+    kwargs = _request(spec, system, messages, tools, settings)
+    streamed_reasoning: str | None = None
+    try:
+        if sink is not None:
+            response, streamed_reasoning = await _astream(spec, kwargs, sink)
+        else:
+            response = await _client(spec, is_async=True).chat.completions.create(**kwargs)
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize(spec, response, streamed_reasoning)
+
+
+def _request(
+    spec: Spec,
+    system: str,
+    messages: tuple[Message, ...],
+    tools: tuple[ToolDefinition, ...],
+    settings: ModelSettings | None,
+) -> dict[str, Any]:
+    """Everything the API needs, built once for every shell that sends it."""
     provider = spec.provider
     configured = settings or ModelSettings()
     request_tools = [
@@ -133,14 +201,53 @@ def call_model(
     if request_tools:
         kwargs["tools"] = request_tools
         kwargs["tool_choice"] = configured.tool_choice
+    # Raises rather than returns for a setting this provider cannot express, so
+    # a caller who asked for `off` is never quietly billed for reasoning.
+    kwargs.update(thinking_kwargs(spec, configured.thinking))
+    return kwargs
 
-    try:
-        response = _client(spec).chat.completions.create(**kwargs)
-    except openai.APIStatusError as exc:
-        raise _status_error(spec, exc) from exc
-    except openai.APIConnectionError as exc:
-        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+async def _astream(spec: Spec, kwargs: dict[str, Any], sink: AsyncStreamSink):
+    """The async twin of `_stream`; same reason for accumulating by hand."""
+    reasoning: list[str] = []
+    async with _client(spec, is_async=True).chat.completions.stream(**kwargs) as stream:
+        async for event in stream:
+            if event.type != "chunk" or not event.chunk.choices:
+                continue
+            delta = event.chunk.choices[0].delta
+            fragment = getattr(delta, "reasoning_content", None)
+            if fragment:
+                reasoning.append(fragment)
+                await sink.on_thinking(fragment)
+            if getattr(delta, "content", None):
+                await sink.on_text(delta.content)
+        return await stream.get_final_completion(), "".join(reasoning) or None
+
+
+def _stream(spec: Spec, kwargs: dict[str, Any], sink: StreamSink):
+    """Drain the stream, returning the accumulated completion and reasoning.
+
+    `reasoning_content` is a vendor extension, and the SDK accumulator promises
+    nothing about fields outside its own schema. Losing it here would not fail
+    here — it would 400 the *next* turn (ADR-0018), a long way from the cause —
+    so this wire accumulates it rather than trusting the snapshot.
+    """
+    reasoning: list[str] = []
+    with _client(spec).chat.completions.stream(**kwargs) as stream:
+        for event in stream:
+            if event.type != "chunk" or not event.chunk.choices:
+                continue
+            delta = event.chunk.choices[0].delta
+            fragment = getattr(delta, "reasoning_content", None)
+            if fragment:
+                reasoning.append(fragment)
+                sink.on_thinking(fragment)
+            if getattr(delta, "content", None):
+                sink.on_text(delta.content)
+        return stream.get_final_completion(), "".join(reasoning) or None
+
+
+def _normalize(spec: Spec, response, streamed_reasoning: str | None = None) -> ModelResult:
     if not response.choices:
         raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]
@@ -156,11 +263,20 @@ def call_model(
             if not isinstance(arguments, dict):
                 raise ProviderError(f"{spec}: tool arguments were not a JSON object")
             calls.append(ToolCall(raw_call.id, raw_call.function.name, arguments))
-        decision = ToolCalls(tuple(calls))
+        decision = ToolCalls(tuple(calls), text=message.content or None)
     elif message.content:
         decision = FinalOutput(text=message.content)
     else:
         raise ProviderError(f"{spec}: response contained no usable decision")
+
+    # Captured whether or not it was requested: a server that volunteered this
+    # stated a fact, and the record keeps what arrived (ADR-0019).
+    thinking = streamed_reasoning or getattr(message, "reasoning_content", None) or None
+    reasoning = (
+        ReasoningState(wire=WIRE, blocks=({"reasoning_content": thinking},))
+        if thinking is not None
+        else None
+    )
 
     usage = response.usage
     details = getattr(usage, "prompt_tokens_details", None)
@@ -174,43 +290,28 @@ def call_model(
             cached_input_tokens=getattr(details, "cached_tokens", 0) or 0,
         ),
         finish_reason=choice.finish_reason,
+        thinking=thinking,
+        reasoning=reasoning,
     )
 
 
-def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, Any]) -> CallResult:
+def call_tool(
+    spec: Spec, *, system: str, blocks: tuple[TextBlock, ...], tool: dict[str, Any]
+) -> CallResult:
     import openai
 
-    provider = spec.provider
     client = _client(spec)
-
-    function = {
-        "name": tool["name"],
-        "description": tool["description"],
-        "parameters": tool["input_schema"],
-    }
-    if provider.strict:
-        function["strict"] = True
-
-    # No cache breakpoint on this wire — every block is concatenated into one
-    # user message, unlike the Anthropic wire's cache-marked content blocks.
-    user_content = "\n\n".join(block["text"] for block in blocks)
-
     try:
-        response = client.chat.completions.create(
-            model=spec.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-            tools=[{"type": "function", "function": function}],
-            tool_choice={"type": "function", "function": {"name": tool["name"]}},
-            **{provider.max_tokens_field: MAX_TOKENS},
-        )
+        response = client.chat.completions.create(**_tool_request(spec, system, blocks, tool))
     except openai.APIStatusError as exc:
         raise _status_error(spec, exc) from exc
     except openai.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    return _normalize_tool(spec, response, tool)
+
+
+def _normalize_tool(spec: Spec, response, tool: dict[str, Any]) -> CallResult:
     if not response.choices:
         raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]
@@ -239,7 +340,52 @@ def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, A
     )
 
 
-def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[str]) -> ChoiceResult:
+async def acall_tool(
+    spec: Spec, *, system: str, blocks: tuple[TextBlock, ...], tool: dict[str, Any]
+) -> CallResult:
+    """`call_tool` on the async client — same request, same validation."""
+    import openai
+
+    try:
+        response = await _client(spec, is_async=True).chat.completions.create(
+            **_tool_request(spec, system, blocks, tool)
+        )
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize_tool(spec, response, tool)
+
+
+def _tool_request(
+    spec: Spec, system: str, blocks: tuple[TextBlock, ...], tool: dict[str, Any]
+) -> dict[str, Any]:
+    provider = spec.provider
+    function: dict[str, Any] = {
+        "name": tool["name"],
+        "description": tool["description"],
+        "parameters": tool["input_schema"],
+    }
+    if provider.strict:
+        function["strict"] = True
+    return {
+        "model": spec.model,
+        "messages": [
+            {"role": "system", "content": system},
+            # No cache breakpoint on this wire — every block is concatenated
+            # into one user message, unlike Anthropic's marked content blocks.
+            {"role": "user", "content": "\n\n".join(block.text for block in blocks)},
+        ],
+        "tools": [{"type": "function", "function": function}],
+        "tool_choice": {"type": "function", "function": {"name": tool["name"]}},
+        provider.max_tokens_field: MAX_TOKENS,
+    }
+
+
+def call_choice(
+    spec: Spec, *, system: str, blocks: tuple[TextBlock, ...], labels: list[str]
+) -> ChoiceResult:
     """One constrained single-token call, scored from the model's own logprobs.
 
     Generates **one** token and reads the alternatives considered at that
@@ -254,35 +400,62 @@ def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[st
     """
     import openai
 
-    provider = spec.provider
     _validate_labels(spec, labels)
-
-    user_content = "\n\n".join(block["text"] for block in blocks)
-    extra: dict[str, Any] = {}
-    if provider.guided_choice:
-        # vLLM only — constrains decoding to the label set so the sampled
-        # token cannot be anything else. The score is read the same way with
-        # or without it; this just removes the off-label case.
-        extra["extra_body"] = {"guided_choice": labels}
-
-    client = _client(spec)
     try:
-        response = client.chat.completions.create(
-            model=spec.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
-            ],
-            logprobs=True,
-            top_logprobs=TOP_LOGPROBS,
-            **{provider.max_tokens_field: 1},
-            **extra,
+        response = _client(spec).chat.completions.create(
+            **_choice_request(spec, system, blocks, labels)
         )
     except openai.APIStatusError as exc:
         raise _status_error(spec, exc) from exc
     except openai.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    return _normalize_choice(spec, response, labels)
+
+
+async def acall_choice(
+    spec: Spec, *, system: str, blocks: tuple[TextBlock, ...], labels: list[str]
+) -> ChoiceResult:
+    """`call_choice` on the async client — same constraints, same scoring."""
+    import openai
+
+    _validate_labels(spec, labels)
+    try:
+        response = await _client(spec, is_async=True).chat.completions.create(
+            **_choice_request(spec, system, blocks, labels)
+        )
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize_choice(spec, response, labels)
+
+
+def _choice_request(
+    spec: Spec, system: str, blocks: tuple[TextBlock, ...], labels: list[str]
+) -> dict[str, Any]:
+    provider = spec.provider
+    extra: dict[str, Any] = {}
+    if provider.guided_choice:
+        # vLLM only — constrains decoding to the label set so the sampled
+        # token cannot be anything else. The score is read the same way with
+        # or without it; this just removes the off-label case.
+        extra["extra_body"] = {"guided_choice": labels}
+    return {
+        "model": spec.model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "\n\n".join(block.text for block in blocks)},
+        ],
+        "logprobs": True,
+        "top_logprobs": TOP_LOGPROBS,
+        provider.max_tokens_field: 1,
+        **extra,
+    }
+
+
+def _normalize_choice(spec: Spec, response, labels: list[str]) -> ChoiceResult:
     if not response.choices:
         raise ProviderError(f"{spec}: no completion choice returned")
     choice = response.choices[0]

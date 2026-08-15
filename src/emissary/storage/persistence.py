@@ -4,14 +4,13 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from ..harness.events import RunEvent
 from ..harness.state import RunResult, RunStatus, StopReason
-from ..llm.decision import FinalOutput, ToolCall, Usage
-from ..llm.messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
+from ..llm.decision import FinalOutput, Usage
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class RunStore(Protocol):
@@ -20,45 +19,8 @@ class RunStore(Protocol):
     def load(self, run_id: str) -> RunResult | None: ...
 
 
-def _message_to_data(message: Message) -> dict[str, Any]:
-    if isinstance(message, UserMessage):
-        return {
-            "type": "user",
-            "content": [{"text": block.text, "cache": block.cache} for block in message.content],
-        }
-    if isinstance(message, AssistantMessage):
-        return {
-            "type": "assistant",
-            "text": message.text,
-            "tool_calls": [
-                {"id": call.id, "name": call.name, "arguments": call.arguments}
-                for call in message.tool_calls
-            ],
-        }
-    return {
-        "type": "tool",
-        "call_id": message.call_id,
-        "tool_name": message.tool_name,
-        "content": message.content,
-    }
-
-
-def _message_from_data(data: dict[str, Any]) -> Message:
-    if data["type"] == "user":
-        return UserMessage(
-            tuple(TextBlock(block["text"], block["cache"]) for block in data["content"])
-        )
-    if data["type"] == "assistant":
-        calls = tuple(
-            ToolCall(call["id"], call["name"], call["arguments"]) for call in data["tool_calls"]
-        )
-        return AssistantMessage(data["text"], calls)
-    if data["type"] == "tool":
-        return ToolMessage(data["call_id"], data["tool_name"], data["content"])
-    raise ValueError(f"unknown persisted message type {data['type']!r}")
-
-
 def serialize_run(result: RunResult) -> str:
+    """Messages are not stored: they are derived from ``events`` (ADR-0011)."""
     payload = {
         "schema_version": SCHEMA_VERSION,
         "run_id": result.run_id,
@@ -74,7 +36,6 @@ def serialize_run(result: RunResult) -> str:
             "output_tokens": result.usage.output_tokens,
             "cached_input_tokens": result.usage.cached_input_tokens,
         },
-        "messages": [_message_to_data(message) for message in result.messages],
         "events": [
             {
                 "run_id": event.run_id,
@@ -101,7 +62,6 @@ def deserialize_run(payload: str) -> RunResult:
         stop_reason=StopReason(data["stop_reason"]),
         output=FinalOutput(output["text"], output["value"]) if output is not None else None,
         usage=Usage(usage["input_tokens"], usage["output_tokens"], usage["cached_input_tokens"]),
-        messages=tuple(_message_from_data(message) for message in data["messages"]),
         events=tuple(
             RunEvent(
                 event["run_id"],
