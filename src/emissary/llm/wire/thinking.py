@@ -39,6 +39,19 @@ def _deepseek(spec: Spec, setting: Thinking) -> dict[str, Any]:
     return {"extra_body": {"thinking": {"type": enabled}}}
 
 
+def _gemini(spec: Spec, setting: Thinking) -> dict[str, Any]:
+    """`ThinkingLevel` has no OFF member, so disabling is a zero budget.
+
+    That is the documented switch for 2.5-generation models; Gemini 3+ prefers
+    `thinking_level` and may not honour a budget of zero. Named here rather
+    than hidden, because a silently-ignored `off` is the failure ADR-0019
+    exists to prevent.
+    """
+    if setting == "off":
+        return {"thinking_config": {"thinking_budget": 0}}
+    return {"thinking_config": {"include_thoughts": setting == "visible"}}
+
+
 def _effort(spec: Spec, setting: Thinking) -> dict[str, Any]:
     """Models that always reason (Kimi K3), tuned by effort rather than toggled.
 
@@ -55,6 +68,7 @@ DIALECTS: dict[str, Callable[[Spec, Thinking], dict[str, Any]]] = {
     "anthropic": _anthropic,
     "deepseek": _deepseek,
     "effort": _effort,
+    "gemini": _gemini,
 }
 
 

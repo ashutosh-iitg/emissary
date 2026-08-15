@@ -7,7 +7,7 @@ from .decision import ModelResult, ModelSettings, ToolDefinition
 from .errors import CapabilityError, ProviderError
 from .messages import Message
 from .provider import Spec, key_present
-from .wire import anthropic, openai_compatible
+from .wire import WIRES
 
 
 class ModelCaller(Protocol):
@@ -31,7 +31,9 @@ def call_model(
 ) -> ModelResult:
     """Execute one normalized model turn through the selected wire."""
     if not key_present(spec):
-        raise ProviderError(f"{spec.provider.key_env} is not set for provider {spec.name!r}")
+        raise ProviderError(
+            f"{spec.provider.credential.describe()} is not configured for provider {spec.name!r}"
+        )
     if tools and not spec.provider.capabilities.tool_calling:
         raise CapabilityError(f"{spec}: this provider does not support tool calling")
     if (
@@ -40,11 +42,7 @@ def call_model(
         and not spec.provider.capabilities.thinking
     ):
         raise CapabilityError(f"{spec}: this provider does not support thinking control")
-    if spec.provider.wire == "anthropic":
-        return anthropic.call_model(
-            spec, system=system, messages=messages, tools=tools, settings=settings
-        )
-    return openai_compatible.call_model(
+    return WIRES[spec.provider.wire].call_model(
         spec, system=system, messages=messages, tools=tools, settings=settings
     )
 

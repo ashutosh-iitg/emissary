@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from emissary import PROVIDERS, CapabilityError, Provider, ProviderError, parse_spec
+from emissary.llm.credentials import Unauthenticated
 from emissary.llm.decision import FinalOutput, ModelCapabilities, ModelResult, ToolDefinition, Usage
 from emissary.llm.messages import TextBlock, UserMessage
 from emissary.llm.model import FallbackModelCaller, call_model
@@ -16,7 +17,7 @@ def test_call_model_gates_credentials_before_wire_dispatch(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     with (
-        patch("emissary.llm.model.anthropic.call_model") as wire,
+        patch("emissary.llm.wire.anthropic.call_model") as wire,
         pytest.raises(ProviderError, match="ANTHROPIC_API_KEY"),
     ):
         call_model(parse_spec("anthropic"), system="s", messages=MESSAGES)
@@ -27,7 +28,7 @@ def test_call_model_gates_credentials_before_wire_dispatch(monkeypatch):
 def test_call_model_dispatches_by_wire_and_returns_normalized_result(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
 
-    with patch("emissary.llm.model.anthropic.call_model", return_value=RESULT) as wire:
+    with patch("emissary.llm.wire.anthropic.call_model", return_value=RESULT) as wire:
         assert call_model(parse_spec("anthropic"), system="s", messages=MESSAGES) is RESULT
 
     wire.assert_called_once()
@@ -71,14 +72,14 @@ def test_unsupported_tool_capability_fails_before_wire_dispatch(monkeypatch):
         "textonly",
         Provider(
             wire="openai",
-            key_required=False,
+            credential=Unauthenticated(),
             default_model="plain",
             capabilities=ModelCapabilities(),
         ),
     )
 
     with (
-        patch("emissary.llm.model.openai_compatible.call_model") as wire,
+        patch("emissary.llm.wire.openai_compatible.call_model") as wire,
         pytest.raises(CapabilityError, match="does not support tool calling"),
     ):
         call_model(parse_spec("textonly"), system="s", messages=MESSAGES, tools=(TOOL,))

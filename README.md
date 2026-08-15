@@ -1,10 +1,16 @@
 # emissary
 
-A small, provider-agnostic wrapper over LLM APIs. One call shape, two wire
-formats: the native Anthropic Messages API, and OpenAI-compatible chat
-completions — which covers OpenAI, Kimi, DeepSeek, Gemini, and a locally
-hosted [vLLM](https://github.com/vllm-project/vllm) server. Two adapters and
-a table, not five-or-six integrations.
+A small, provider-agnostic wrapper over LLM APIs. One call shape, three wire
+formats: the native Anthropic Messages API, Gemini's `generateContent`, and
+OpenAI-compatible chat completions — which covers OpenAI, Kimi, DeepSeek, and
+a locally hosted [vLLM](https://github.com/vllm-project/vllm) server. Three
+adapters and a table, not seven integrations.
+
+A provider only gets its own adapter when the compatibility layer loses
+something the caller needs. Gemini earned one because that layer drops
+`thought_signature`, which Gemini 3+ requires on every tool-calling turn after
+the first. DeepSeek and Kimi did not: OpenAI-compatible *is* their first-party
+API.
 
 One call shape: a tool-forced structured call, because the callers that
 exist all want a typed answer rather than prose.
@@ -64,18 +70,47 @@ Labels must differ in their **first token** — they're matched by prefix, so
 
 ## Providers
 
-| name | wire | key env | notes |
+| name | wire | credential | notes |
 |---|---|---|---|
-| `anthropic` | native | `ANTHROPIC_API_KEY` | default model `claude-opus-5` |
+| `anthropic` | anthropic | `ANTHROPIC_API_KEY` | default model `claude-opus-5` |
 | `openai` | openai-compatible | `OPENAI_API_KEY` | no default model — name one |
 | `kimi` | openai-compatible | `MOONSHOT_API_KEY` | default model `kimi-k3` |
 | `deepseek` | openai-compatible | `DEEPSEEK_API_KEY` | default model `deepseek-v4-pro` |
-| `gemini` | openai-compatible | `GEMINI_API_KEY` | default model `gemini-3.6-flash` |
+| `gemini` | gemini | `GEMINI_API_KEY` | default model `gemini-3.6-flash` |
+| `vertex` | gemini | Google ADC + `GOOGLE_CLOUD_PROJECT` | `GOOGLE_CLOUD_LOCATION` (default `global`), no default model |
 | `vllm` | openai-compatible | `VLLM_API_KEY` (optional) | `VLLM_BASE_URL` (default `http://localhost:8000/v1`), no default model |
 
 `vllm` points at any OpenAI-compatible server vLLM exposes for a locally
 hosted, open-weight model — no credential required by default, since vLLM's
 server doesn't authenticate unless you put something in front of it.
+
+`vertex` reaches the same models as `gemini` through GCP: application default
+credentials instead of an API key, and a project and region instead of a base
+URL. `key_present(spec)` answers for either without spending a request.
+
+## Thinking
+
+`ModelSettings.thinking` is one neutral setting across every provider:
+
+| value | meaning |
+|---|---|
+| `default` | send no thinking parameter — each provider's own behaviour |
+| `off` | do not reason |
+| `on` | reason, text not required |
+| `visible` | reason and return the text |
+
+Anything a provider cannot express raises `CapabilityError` rather than being
+quietly dropped, because each explicit value is a promise about cost or
+disclosure — Kimi K3 always reasons, so `off` fails there instead of billing
+you for reasoning you asked to skip.
+
+Two different things come back. `ModelResult.thinking` is readable text for
+logs and evaluation. `ModelResult.reasoning` is opaque provider state that the
+*next* request must carry back — signed Anthropic thinking blocks, Gemini
+thought signatures, DeepSeek and Kimi `reasoning_content`. All three APIs
+reject a follow-up turn that loses it, so the harness replays it verbatim and
+never inspects it. It is tagged with the wire that issued it, so a fallback to
+a different provider drops it rather than forwarding something unparseable.
 
 ## Selection and fallback
 
@@ -122,7 +157,7 @@ itself.
 
 The harness runs a bounded model → tool → observation loop through the same
 provider-neutral emissary caller. Harness code never imports a provider SDK,
-so any model registered behind the Anthropic or OpenAI-compatible wire can be
+so any model registered behind the Anthropic, Gemini, or OpenAI-compatible wire can be
 used without changing the runner.
 
 ```python

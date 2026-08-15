@@ -1,9 +1,11 @@
 """The provider registry — every backend this package knows how to reach, and how.
 
-Six providers, **two wire formats**. Claude speaks the Anthropic Messages API;
-OpenAI, Kimi, DeepSeek, Gemini, and a locally-hosted vLLM server all speak
-OpenAI-compatible chat completions. So this is two adapters and a table, not
-six integrations.
+Seven providers, **three wire formats**. Claude speaks the Anthropic Messages
+API; Gemini and Vertex speak `generateContent`; OpenAI, Kimi, DeepSeek, and a
+locally-hosted vLLM server all speak OpenAI-compatible chat completions. So
+this is three adapters and a table, not seven integrations — and a provider
+only earns its own adapter when the compatibility layer loses a capability the
+harness needs (ADR-0020).
 
 Base URLs and key variables for the hosted providers were verified against
 each provider's own documentation. Model IDs move faster than endpoints;
@@ -15,6 +17,7 @@ than be handed a guess.
 import os
 from dataclasses import dataclass, field
 
+from .credentials import ApiKey, Credential, GoogleADC, Unauthenticated
 from .decision import ModelCapabilities
 from .errors import ProviderError
 
@@ -22,11 +25,10 @@ from .errors import ProviderError
 @dataclass(frozen=True)
 class Provider:
     wire: str
-    key_env: str | None = None
-    # Whether `key_env` must actually be set for `key_present` to pass. False
-    # for vLLM: it has a key var for deployments that put auth in front of
-    # it, but an unauthenticated local server — the default — needs none.
-    key_required: bool = True
+    # How this backend proves who it is (ADR-0021). A collaborator rather than
+    # an env var name, because Vertex authenticates with ADC and addresses
+    # models by project and region — which two fields cannot express.
+    credential: Credential = field(default_factory=lambda: Unauthenticated())
     base_url_env: str | None = None
     base_url: str | None = None
     default_model: str | None = None
@@ -50,6 +52,11 @@ class Provider:
     thinking_dialect: str = "none"
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
 
+    @property
+    def key_env(self) -> str | None:
+        """The variable an operator must set, where there is exactly one."""
+        return getattr(self.credential, "env_var", None)
+
     def resolved_base_url(self) -> str | None:
         """The base URL to call, reading an env var for providers whose
         address isn't a fixed constant (a local vLLM server has no vendor
@@ -62,7 +69,7 @@ class Provider:
 PROVIDERS: dict[str, Provider] = {
     "anthropic": Provider(
         wire="anthropic",
-        key_env="ANTHROPIC_API_KEY",
+        credential=ApiKey("ANTHROPIC_API_KEY"),
         default_model="claude-opus-5",
         strict=True,
         thinking_dialect="anthropic",
@@ -70,7 +77,7 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "openai": Provider(
         wire="openai",
-        key_env="OPENAI_API_KEY",
+        credential=ApiKey("OPENAI_API_KEY"),
         default_model=None,
         strict=True,
         max_tokens_field="max_completion_tokens",
@@ -80,7 +87,7 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "kimi": Provider(
         wire="openai",
-        key_env="MOONSHOT_API_KEY",
+        credential=ApiKey("MOONSHOT_API_KEY"),
         base_url="https://api.moonshot.ai/v1",
         default_model="kimi-k3",
         # K3 always reasons and is tuned by `reasoning_effort`; it has no off
@@ -92,7 +99,7 @@ PROVIDERS: dict[str, Provider] = {
     ),
     "deepseek": Provider(
         wire="openai",
-        key_env="DEEPSEEK_API_KEY",
+        credential=ApiKey("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com",
         default_model="deepseek-v4-pro",
         thinking_dialect="deepseek",
@@ -100,20 +107,32 @@ PROVIDERS: dict[str, Provider] = {
             tool_calling=True, parallel_tool_calls=True, logprobs=True, thinking=True
         ),
     ),
+    # Native `generateContent`, not the OpenAI-compatible shim: that layer
+    # drops `thought_signature`, and Gemini 3+ rejects a multi-turn tool call
+    # without it, which is every turn but the first of an agent run.
     "gemini": Provider(
-        wire="openai",
-        key_env="GEMINI_API_KEY",
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        wire="gemini",
+        credential=ApiKey("GEMINI_API_KEY"),
         default_model="gemini-3.6-flash",
-        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
+        thinking_dialect="gemini",
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, thinking=True),
+    ),
+    # The same wire and model family reached through GCP: ADC instead of a key,
+    # project and region instead of a base URL. No default model — Vertex model
+    # IDs are region-dependent, so naming one here would be a guess.
+    "vertex": Provider(
+        wire="gemini",
+        credential=GoogleADC("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+        default_model=None,
+        thinking_dialect="gemini",
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, thinking=True),
     ),
     "vllm": Provider(
         wire="openai",
         # Not required: vLLM's OpenAI-compatible server doesn't authenticate
         # by default. When a deployment does put a key in front of it, set
         # VLLM_API_KEY and it's sent like any other provider's credential.
-        key_env="VLLM_API_KEY",
-        key_required=False,
+        credential=Unauthenticated("VLLM_API_KEY"),
         base_url_env="VLLM_BASE_URL",
         base_url="http://localhost:8000/v1",
         default_model=None,
@@ -159,13 +178,12 @@ def parse_spec(spec: str, default_model: str | None = None) -> Spec:
 def key_present(spec: Spec) -> bool:
     """Whether the selected provider has a credential, without spending a call.
 
-    A provider marked `key_required=False` (an unauthenticated local vLLM
-    server, by default) is always "present" — there is nothing to configure.
+    Named for the API-key case that covers most providers, but it delegates to
+    whatever `Credential` the provider carries — ADC for Vertex, always-true
+    for an unauthenticated local vLLM server. The name is kept because both
+    consumers import it (ADR-0021).
     """
-    provider = spec.provider
-    if not provider.key_required:
-        return True
-    return bool(os.environ.get(provider.key_env)) if provider.key_env else True
+    return spec.provider.credential.available()
 
 
 __all__ = [

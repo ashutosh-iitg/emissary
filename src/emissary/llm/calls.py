@@ -12,9 +12,16 @@ from .messages import TextBlock
 from .prompt import Prompt, build_prompt
 from .provider import Spec, key_present
 from .result import CallResult, ChoiceResult
-from .wire import anthropic, openai_compatible
+from .wire import WIRES, anthropic
 
 __all__ = ["call_choice", "call_tool"]
+
+
+def _require_credential(spec: Spec) -> None:
+    if not key_present(spec):
+        raise ProviderError(
+            f"{spec.provider.credential.describe()} is not configured for provider {spec.name!r}"
+        )
 
 
 def call_tool(
@@ -35,15 +42,13 @@ def call_tool(
     which has no equivalent.
     """
     request = build_prompt(prompt, system, tuple(blocks))
-    if not key_present(spec):
-        raise ProviderError(f"{spec.provider.key_env} is not set for provider {spec.name!r}")
-    if spec.provider.wire == "anthropic":
-        return anthropic.call_tool(
-            spec, system=request.system, blocks=request.blocks, tool=tool, effort=effort
-        )
-    return openai_compatible.call_tool(
-        spec, system=request.system, blocks=request.blocks, tool=tool
-    )
+    _require_credential(spec)
+    wire = WIRES[spec.provider.wire]
+    if not hasattr(wire, "call_tool"):
+        raise ProviderError(f"{spec}: this provider does not serve tool-forced calls")
+    # `effort` is Anthropic-only; passing it elsewhere would be an unknown kwarg.
+    extra = {"effort": effort} if wire is anthropic else {}
+    return wire.call_tool(spec, system=request.system, blocks=request.blocks, tool=tool, **extra)
 
 
 def call_choice(
@@ -65,13 +70,15 @@ def call_choice(
     measurement.
     """
     request = build_prompt(prompt, system, tuple(blocks))
-    if spec.provider.wire == "anthropic":
+    # Gated on the capability, not on one wire's name: Anthropic and Gemini
+    # both lack logprobs, and a name check would have silently admitted the
+    # third wire when it was added (ADR-0004).
+    if not spec.provider.capabilities.logprobs:
         raise ProviderError(
-            f"{spec}: the Anthropic API exposes no logprobs, so this provider cannot be "
-            "scored — use an OpenAI-compatible provider such as 'vllm:<model>' or 'openai'"
+            f"{spec}: this provider exposes no logprobs, so it cannot be scored — use an "
+            "OpenAI-compatible provider such as 'vllm:<model>' or 'openai'"
         )
-    if not key_present(spec):
-        raise ProviderError(f"{spec.provider.key_env} is not set for provider {spec.name!r}")
-    return openai_compatible.call_choice(
+    _require_credential(spec)
+    return WIRES[spec.provider.wire].call_choice(
         spec, system=request.system, blocks=request.blocks, labels=labels
     )
