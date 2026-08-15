@@ -14,7 +14,7 @@ from .harness.tools import (
     ToolRegistry,
     ToolResult,
 )
-from .llm.calls import call_choice, call_tool
+from .llm.calls import acall_choice, acall_tool, call_choice, call_tool
 from .llm.decision import (
     FinalOutput,
     ModelCapabilities,
@@ -29,12 +29,21 @@ from .llm.decision import (
 )
 from .llm.errors import CapabilityError, ProviderError
 from .llm.messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
-from .llm.model import FallbackModelCaller, ModelCaller, SpecModelCaller, call_model
+from .llm.model import (
+    AsyncFallbackModelCaller,
+    AsyncModelCaller,
+    AsyncSpecModelCaller,
+    FallbackModelCaller,
+    ModelCaller,
+    SpecModelCaller,
+    acall_model,
+    call_model,
+)
 from .llm.prompt import Prompt
 from .llm.provider import PROVIDERS, Provider, Spec, key_present, parse_spec
 from .llm.result import CallResult, ChoiceResult
 from .llm.selection import call_tool_with_fallback, resolve_spec
-from .llm.streaming import StreamSink
+from .llm.streaming import AsyncStreamSink, StreamSink
 from .storage import RunStore, SQLiteRunStore, deserialize_run, serialize_run
 
 __all__ = [
@@ -43,6 +52,10 @@ __all__ = [
     "ApprovalDecision",
     "Approver",
     "AssistantMessage",
+    "AsyncFallbackModelCaller",
+    "AsyncModelCaller",
+    "AsyncSpecModelCaller",
+    "AsyncStreamSink",
     "CallResult",
     "CapabilityError",
     "ChoiceResult",
@@ -90,6 +103,9 @@ __all__ = [
     "ToolResult",
     "Usage",
     "UserMessage",
+    "acall_choice",
+    "acall_model",
+    "acall_tool",
     "call_choice",
     "call_model",
     "call_tool",

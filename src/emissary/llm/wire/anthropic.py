@@ -17,7 +17,7 @@ from ..errors import ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult
-from ..streaming import StreamSink
+from ..streaming import AsyncStreamSink, StreamSink
 from .thinking import thinking_kwargs
 
 WIRE = "anthropic"
@@ -96,6 +96,61 @@ def call_model(
     """
     import anthropic
 
+    kwargs = _request(spec, system, messages, tools, settings)
+    try:
+        response = _stream(anthropic, kwargs, sink) if sink else _create(anthropic, kwargs)
+    except anthropic.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except anthropic.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize(spec, response)
+
+
+async def acall_model(
+    spec: Spec,
+    *,
+    system: str,
+    messages: tuple[Message, ...],
+    tools: tuple[ToolDefinition, ...] = (),
+    settings: ModelSettings | None = None,
+    sink: AsyncStreamSink | None = None,
+) -> ModelResult:
+    """`call_model` on the async client — same request, same normalisation.
+
+    Holds no logic of its own on purpose: everything that could disagree with
+    the sync path lives in `_request` and `_normalize`, which both call
+    (ADR-0023).
+    """
+    import anthropic
+
+    kwargs = _request(spec, system, messages, tools, settings)
+    try:
+        response = (
+            await _astream(anthropic, kwargs, sink) if sink else await _acreate(anthropic, kwargs)
+        )
+    except anthropic.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except anthropic.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize(spec, response)
+
+
+def _status_error(spec: Spec, exc) -> ProviderError:
+    return ProviderError(
+        f"{spec}: {exc.status_code} {exc.message}", retryable=retryable_status(exc.status_code)
+    )
+
+
+def _request(
+    spec: Spec,
+    system: str,
+    messages: tuple[Message, ...],
+    tools: tuple[ToolDefinition, ...],
+    settings: ModelSettings | None,
+) -> dict[str, Any]:
+    """Everything the API needs, built once for every shell that sends it."""
     configured = settings or ModelSettings()
     kwargs: dict[str, Any] = {
         "model": spec.model,
@@ -115,22 +170,27 @@ def call_model(
         if configured.tool_choice == "required":
             kwargs["tool_choice"] = {"type": "any"}
     kwargs.update(thinking_kwargs(spec, configured.thinking))
-
-    try:
-        response = _stream(anthropic, kwargs, sink) if sink else _create(anthropic, kwargs)
-    except anthropic.APIStatusError as exc:
-        raise ProviderError(
-            f"{spec}: {exc.status_code} {exc.message}",
-            retryable=retryable_status(exc.status_code),
-        ) from exc
-    except anthropic.APIConnectionError as exc:
-        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
-
-    return _normalize(spec, response)
+    return kwargs
 
 
 def _create(anthropic, kwargs: dict[str, Any]):
     return anthropic.Anthropic().messages.create(**kwargs)
+
+
+async def _acreate(anthropic, kwargs: dict[str, Any]):
+    return await anthropic.AsyncAnthropic().messages.create(**kwargs)
+
+
+async def _astream(anthropic, kwargs: dict[str, Any], sink: AsyncStreamSink):
+    async with anthropic.AsyncAnthropic().messages.stream(**kwargs) as stream:
+        async for event in stream:
+            if event.type != "content_block_delta":
+                continue
+            if event.delta.type == "text_delta":
+                await sink.on_text(event.delta.text)
+            elif event.delta.type == "thinking_delta":
+                await sink.on_thinking(event.delta.thinking)
+        return await stream.get_final_message()
 
 
 def _stream(anthropic, kwargs: dict[str, Any], sink: StreamSink):
@@ -210,33 +270,73 @@ def call_tool(
     """One structured call that must answer by invoking `tool`."""
     import anthropic
 
-    content = [
-        {
-            "type": "text",
-            "text": block.text,
-            **({"cache_control": {"type": "ephemeral"}} if block.cache else {}),
-        }
-        for block in blocks
-    ]
     try:
         response = anthropic.Anthropic().messages.create(
-            model=spec.model,
-            max_tokens=MAX_TOKENS,
-            thinking={"type": "adaptive"},
-            **({"output_config": {"effort": effort}} if effort else {}),
-            system=system,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": tool["name"]},
-            messages=[{"role": "user", "content": content}],
+            **_tool_request(spec, system, blocks, tool, effort)
         )
     except anthropic.APIStatusError as exc:
-        raise ProviderError(
-            f"{spec}: {exc.status_code} {exc.message}",
-            retryable=retryable_status(exc.status_code),
-        ) from exc
+        raise _status_error(spec, exc) from exc
     except anthropic.APIConnectionError as exc:
         raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
 
+    return _normalize_tool(spec, response, tool)
+
+
+async def acall_tool(
+    spec: Spec,
+    *,
+    system: str,
+    blocks: tuple[TextBlock, ...],
+    tool: dict[str, Any],
+    effort: str | None = None,
+) -> CallResult:
+    """`call_tool` on the async client — same request, same validation."""
+    import anthropic
+
+    try:
+        response = await anthropic.AsyncAnthropic().messages.create(
+            **_tool_request(spec, system, blocks, tool, effort)
+        )
+    except anthropic.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except anthropic.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize_tool(spec, response, tool)
+
+
+def _tool_request(
+    spec: Spec,
+    system: str,
+    blocks: tuple[TextBlock, ...],
+    tool: dict[str, Any],
+    effort: str | None,
+) -> dict[str, Any]:
+    return {
+        "model": spec.model,
+        "max_tokens": MAX_TOKENS,
+        "thinking": {"type": "adaptive"},
+        **({"output_config": {"effort": effort}} if effort else {}),
+        "system": system,
+        "tools": [tool],
+        "tool_choice": {"type": "tool", "name": tool["name"]},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": block.text,
+                        **({"cache_control": {"type": "ephemeral"}} if block.cache else {}),
+                    }
+                    for block in blocks
+                ],
+            }
+        ],
+    }
+
+
+def _normalize_tool(spec: Spec, response, tool: dict[str, Any]) -> CallResult:
     # Checked before reading `content`: a refusal is a 200 with an empty or
     # partial body, and indexing it is the standard way this breaks.
     if response.stop_reason == "refusal":

@@ -33,4 +33,25 @@ class StreamSink(Protocol):
         ...
 
 
-__all__ = ["StreamSink"]
+@runtime_checkable
+class AsyncStreamSink(Protocol):
+    """The same channel for `acall_model`, awaited rather than called.
+
+    A separate protocol rather than a reused one: the reason to stream from
+    async code is usually to forward deltas somewhere that must be awaited — a
+    websocket, a queue — and a sync-only sink would force the caller to buffer
+    or to spawn tasks that reorder the output (ADR-0023).
+
+    Exceptions propagate here too, for the reason given on `StreamSink`.
+    """
+
+    async def on_text(self, delta: str) -> None:
+        """A fragment of the model's visible answer."""
+        ...
+
+    async def on_thinking(self, delta: str) -> None:
+        """A fragment of the model's reasoning text, where the provider shows it."""
+        ...
+
+
+__all__ = ["AsyncStreamSink", "StreamSink"]

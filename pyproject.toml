@@ -31,7 +31,12 @@ dev = [
     "ruff>=0.16.0",
     # The suite covers every wire, so the optional SDK is required to test.
     "google-genai>=2.18.1",
+    "pytest-asyncio>=1.4.0",
 ]
+
+[tool.pytest.ini_options]
+# Async tests are plain `async def`; no per-test marker needed.
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100

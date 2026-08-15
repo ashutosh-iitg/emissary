@@ -29,7 +29,7 @@ from ..decision import (
 from ..errors import CapabilityError, ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
-from ..streaming import StreamSink
+from ..streaming import AsyncStreamSink, StreamSink
 from .thinking import thinking_kwargs
 
 WIRE = "gemini"
@@ -166,6 +166,48 @@ def call_model(
     """
     errors = _sdk().errors
 
+    request = _request(spec, system, messages, tools, settings)
+    try:
+        if sink is not None:
+            return _stream(spec, request, sink)
+        response = _client(spec).models.generate_content(**request)
+    except errors.APIError as exc:
+        raise _api_error(spec, exc) from exc
+
+    return _normalize(spec, *_unpack(spec, response))
+
+
+async def acall_model(
+    spec: Spec,
+    *,
+    system: str,
+    messages: tuple[Message, ...],
+    tools: tuple[ToolDefinition, ...] = (),
+    settings: ModelSettings | None = None,
+    sink: AsyncStreamSink | None = None,
+) -> ModelResult:
+    """`call_model` on the SDK's `.aio` client — same request, same merge."""
+    errors = _sdk().errors
+
+    request = _request(spec, system, messages, tools, settings)
+    try:
+        if sink is not None:
+            return await _astream(spec, request, sink)
+        response = await _client(spec).aio.models.generate_content(**request)
+    except errors.APIError as exc:
+        raise _api_error(spec, exc) from exc
+
+    return _normalize(spec, *_unpack(spec, response))
+
+
+def _request(
+    spec: Spec,
+    system: str,
+    messages: tuple[Message, ...],
+    tools: tuple[ToolDefinition, ...],
+    settings: ModelSettings | None,
+) -> dict[str, Any]:
+    """Everything the API needs, built once for every shell that sends it."""
     configured = settings or ModelSettings()
     config: dict[str, Any] = {
         "system_instruction": system,
@@ -189,22 +231,35 @@ def call_model(
         if configured.tool_choice == "required":
             config["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
     config.update(thinking_kwargs(spec, configured.thinking))
-
-    request = {
+    return {
         "model": spec.model,
         "contents": _gemini_contents(messages),
         "config": config,
     }
-    try:
-        if sink is not None:
-            return _stream(spec, request, sink)
-        response = _client(spec).models.generate_content(**request)
-    except errors.APIError as exc:
-        raise ProviderError(
-            f"{spec}: {exc.code} {exc.message}", retryable=retryable_status(exc.code)
-        ) from exc
 
-    return _normalize(spec, *_unpack(spec, response))
+
+def _api_error(spec: Spec, exc) -> ProviderError:
+    return ProviderError(f"{spec}: {exc.code} {exc.message}", retryable=retryable_status(exc.code))
+
+
+async def _astream(spec: Spec, request: dict[str, Any], sink: AsyncStreamSink) -> ModelResult:
+    blocks: list[dict[str, Any]] = []
+    finish_reason = usage = None
+    model = spec.model
+    async for chunk in await _client(spec).aio.models.generate_content_stream(**request):
+        chunk_blocks, chunk_finish, chunk_usage, chunk_model = _unpack(spec, chunk)
+        for block in chunk_blocks:
+            text = block.get("text")
+            if text:
+                if block.get("thought"):
+                    await sink.on_thinking(text)
+                else:
+                    await sink.on_text(text)
+            _absorb(blocks, block)
+        finish_reason = chunk_finish or finish_reason
+        usage = chunk_usage or usage
+        model = chunk_model or model
+    return _normalize(spec, tuple(blocks), finish_reason, usage, model)
 
 
 def _unpack(spec: Spec, response) -> tuple[tuple[dict[str, Any], ...], Any, Any, str]:

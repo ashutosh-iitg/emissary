@@ -144,6 +144,34 @@ A sink is called synchronously inside the read loop, and an exception from it
 is **not** caught — a silently frozen display is harder to diagnose than a loud
 failure.
 
+## Async
+
+Every call has an `a`-prefixed sibling — `acall_model`, `acall_tool`,
+`acall_choice` — with matching `AsyncSpecModelCaller` and
+`AsyncFallbackModelCaller`. Each is a shell over the *same* request-building
+and response-normalising functions the sync path uses, so the two cannot
+disagree about what the model said:
+
+```python
+import asyncio, emissary
+
+async def score_all(candidates):
+    spec = emissary.parse_spec("vllm:qwen")
+    return await asyncio.gather(*(
+        emissary.acall_choice(spec, labels=["SAFE", "FLAG"], system=..., blocks=(...,))
+        for candidate in candidates
+    ))
+```
+
+Async streaming takes an `AsyncStreamSink`, whose `on_text` / `on_thinking` are
+awaited — the point of streaming from async code is usually to forward deltas
+somewhere that must be awaited, which a sync-only sink could not do without
+buffering or reordering.
+
+**The bundled runner is still synchronous** (ADR-0005, amended by ADR-0023).
+The async pieces above are the boundary an async agent loop would be built on,
+not an async loop itself.
+
 ## Selection and fallback
 
 `resolve_spec` is the plain "explicit override > env var > default" pattern:
