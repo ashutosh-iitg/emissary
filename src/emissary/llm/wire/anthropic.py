@@ -13,10 +13,9 @@ from ..decision import (
     Usage,
 )
 from ..errors import ProviderError, retryable_status
-from ..messages import AssistantMessage, Message, ToolMessage, UserMessage
+from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult
-from .types import Block
 
 
 def _anthropic_messages(messages: tuple[Message, ...]) -> list[dict[str, Any]]:
@@ -116,7 +115,7 @@ def call_model(
         )
         text = "".join(part.text for part in response.content if part.type == "text")
         if calls:
-            decision = ToolCalls(calls)
+            decision = ToolCalls(calls, text=text or None)
         elif text:
             decision = FinalOutput(text=text)
         else:
@@ -140,7 +139,7 @@ def call_tool(
     spec: Spec,
     *,
     system: str,
-    blocks: list[Block],
+    blocks: tuple[TextBlock, ...],
     tool: dict[str, Any],
     effort: str | None = None,
 ) -> CallResult:
@@ -150,8 +149,8 @@ def call_tool(
     content = [
         {
             "type": "text",
-            "text": block["text"],
-            **({"cache_control": {"type": "ephemeral"}} if block.get("cache") else {}),
+            "text": block.text,
+            **({"cache_control": {"type": "ephemeral"}} if block.cache else {}),
         }
         for block in blocks
     ]

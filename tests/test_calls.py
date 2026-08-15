@@ -4,6 +4,7 @@ import pytest
 
 from emissary import ProviderError, parse_spec
 from emissary.llm.calls import call_tool
+from emissary.llm.messages import TextBlock
 
 TOOL = {"name": "record", "description": "d", "input_schema": {"type": "object"}}
 
@@ -12,7 +13,7 @@ def test_a_missing_key_is_refused_before_any_network_call(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     with pytest.raises(ProviderError, match="ANTHROPIC_API_KEY"):
-        call_tool(parse_spec("anthropic"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("anthropic"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
 
 def test_vllm_needs_no_key_to_pass_the_gate(monkeypatch):
@@ -22,4 +23,4 @@ def test_vllm_needs_no_key_to_pass_the_gate(monkeypatch):
     monkeypatch.delenv("VLLM_BASE_URL", raising=False)
 
     with pytest.raises(ProviderError, match="could not reach the API"):
-        call_tool(parse_spec("vllm:qwen3-8b"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("vllm:qwen3-8b"), system="s", blocks=(TextBlock("d"),), tool=TOOL)

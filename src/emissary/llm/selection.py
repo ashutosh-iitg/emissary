@@ -12,9 +12,9 @@ from typing import Any
 
 from .calls import call_tool
 from .errors import ProviderError
+from .messages import TextBlock
 from .provider import Spec, parse_spec
 from .result import CallResult
-from .wire.types import Block
 
 
 def resolve_spec(value: str | None = None, *, env_var: str, default: str) -> Spec:
@@ -28,7 +28,7 @@ def call_tool_with_fallback(
     fallback: Spec | None,
     *,
     system: str,
-    blocks: list[Block],
+    blocks: tuple[TextBlock | dict, ...],
     tool: dict[str, Any],
     effort: str | None = None,
 ) -> CallResult:

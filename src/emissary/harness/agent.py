@@ -11,6 +11,9 @@ class RunLimits:
     max_turns: int = 12
     max_tool_calls: int = 40
     max_consecutive_tool_errors: int = 3
+    # Per tool, so one flaky tool cannot spend the whole run's error budget —
+    # and cannot hide behind other tools' successes resetting the global count.
+    max_tool_failures: int = 3
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
 
@@ -21,6 +24,8 @@ class RunLimits:
             raise ValueError("max_tool_calls must be non-negative")
         if self.max_consecutive_tool_errors <= 0:
             raise ValueError("max_consecutive_tool_errors must be positive")
+        if self.max_tool_failures <= 0:
+            raise ValueError("max_tool_failures must be positive")
 
 
 @dataclass(frozen=True)

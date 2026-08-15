@@ -17,7 +17,13 @@ spec = emissary.parse_spec("anthropic")  # or "kimi:kimi-k2.6", "vllm:my-model",
 result = emissary.call_tool(
     spec,
     system="You are a careful reviewer.",
-    blocks=[{"text": "<document>", "cache": True}, {"text": "Summarize it.", "cache": False}],
+    prompt=emissary.Prompt(
+        system="You extract structured data.",
+        blocks=(
+            emissary.TextBlock("<document>", cache=True),
+            emissary.TextBlock("Summarize it."),
+        ),
+    ),
     tool={"name": "summarize", "description": "...", "input_schema": {...}},
 )
 print(result.payload)  # the tool's arguments, as a dict
@@ -37,7 +43,7 @@ assigned it:
 result = emissary.call_choice(
     emissary.parse_spec("vllm:my-local-model"),
     system="Answer with exactly one word: SAFE or FLAG.",
-    blocks=[{"text": "<the thing to classify>", "cache": False}],
+    blocks=(emissary.TextBlock("<the thing to classify>"),),
     labels=["SAFE", "FLAG"],
 )
 result.probability("FLAG")  # 0.0-1.0, renormalised over the labels
@@ -165,6 +171,18 @@ Tools are JSON-Schema validated before any call in a batch executes. Tools
 marked `approval="always"` require an injected approver; without one the run
 pauses before the effect. Every model call, proposed action, tool outcome, and
 terminal transition is represented in the run's ordered event trajectory.
+
+## Package layout
+
+The root package re-exports the common API. Larger applications can import from
+the responsibility-specific modules instead:
+
+| Module | Responsibility |
+|---|---|
+| `emissary.llm` | Provider selection, normalized model calls, messages, decisions, and wire adapters |
+| `emissary.harness` | Agent definitions, bounded execution, tools, policy, context, state, and events |
+| `emissary.eval` | Deterministic run and trajectory evaluation |
+| `emissary.storage` | Optional versioned run-record persistence |
 
 ## License
 

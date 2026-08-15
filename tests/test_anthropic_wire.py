@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from emissary import ProviderError, parse_spec
+from emissary.llm.messages import TextBlock
 from emissary.llm.wire.anthropic import call_tool
 
 TOOL = {"name": "record", "description": "d", "input_schema": {"type": "object"}}
@@ -39,7 +40,7 @@ def test_call_tool_returns_the_tool_arguments_and_usage():
         out = call_tool(
             parse_spec("anthropic"),
             system="s",
-            blocks=[{"text": "doc", "cache": True}, {"text": "instr", "cache": False}],
+            blocks=(TextBlock("doc", cache=True), TextBlock("instr")),
             tool=TOOL,
         )
 
@@ -54,7 +55,7 @@ def test_cache_marked_blocks_get_an_ephemeral_breakpoint():
         call_tool(
             parse_spec("anthropic"),
             system="s",
-            blocks=[{"text": "doc", "cache": True}, {"text": "instr", "cache": False}],
+            blocks=(TextBlock("doc", cache=True), TextBlock("instr")),
             tool=TOOL,
         )
 
@@ -66,7 +67,7 @@ def test_cache_marked_blocks_get_an_ephemeral_breakpoint():
 def test_a_refusal_is_retryable():
     response = _response(stop_reason="refusal")
     with _mock_client(response), pytest.raises(ProviderError) as caught:
-        call_tool(parse_spec("anthropic"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("anthropic"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
     assert caught.value.retryable
 
@@ -74,7 +75,7 @@ def test_a_refusal_is_retryable():
 def test_no_matching_tool_call_raises():
     response = _response(content=[])
     with _mock_client(response), pytest.raises(ProviderError, match="no record call"):
-        call_tool(parse_spec("anthropic"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("anthropic"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
 
 def test_server_errors_are_retryable_client_errors_are_not():
@@ -86,14 +87,14 @@ def test_server_errors_are_retryable_client_errors_are_not():
         "overloaded", response=httpx.Response(529, request=request), body=None
     )
     with _mock_client(side_effect=overloaded), pytest.raises(ProviderError) as caught:
-        call_tool(parse_spec("anthropic"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("anthropic"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
     assert caught.value.retryable
 
     bad_request = anthropic.APIStatusError(
         "bad request", response=httpx.Response(400, request=request), body=None
     )
     with _mock_client(side_effect=bad_request), pytest.raises(ProviderError) as caught:
-        call_tool(parse_spec("anthropic"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("anthropic"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
     assert not caught.value.retryable
 
 
@@ -105,6 +106,6 @@ def test_a_connection_error_is_retryable():
         _mock_client(side_effect=anthropic.APIConnectionError(request=request)),
         pytest.raises(ProviderError) as caught,
     ):
-        call_tool(parse_spec("anthropic"), system="s", blocks=[{"text": "d"}], tool=TOOL)
+        call_tool(parse_spec("anthropic"), system="s", blocks=(TextBlock("d"),), tool=TOOL)
 
     assert caught.value.retryable

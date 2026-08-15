@@ -45,7 +45,15 @@ class FinalOutput:
 
 @dataclass(frozen=True)
 class ToolCalls:
+    """Calls the model proposed, with whatever it said while proposing them.
+
+    `text` is the model's own words accompanying the calls. Both wires can
+    return it and both used to drop it, which rewrote the trajectory as if the
+    calls had come from nowhere.
+    """
+
     calls: tuple[ToolCall, ...]
+    text: str | None = None
 
     def __post_init__(self) -> None:
         if not self.calls:

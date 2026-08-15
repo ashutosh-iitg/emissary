@@ -13,16 +13,46 @@ from ..llm.decision import ToolCall, ToolDefinition
 
 @dataclass(frozen=True)
 class ToolResult:
+    """`status` is the severity axis and only that.
+
+    Facts that are not severities get their own field, because they can co-occur
+    with any status: a call can time out and still have succeeded partially, and
+    retryability is a property of the failure, not of how bad it was (ADR-0013).
+    """
+
     status: Literal["success", "warning", "error"]
     summary: str
     content: Any = None
     artifacts: tuple[str, ...] = ()
+    timed_out: bool = False
+    retryable: bool = False
 
     def __post_init__(self) -> None:
         if self.status not in ("success", "warning", "error"):
             raise ValueError("invalid tool result status")
         if not self.summary:
             raise ValueError("tool result summary must not be empty")
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """What one attempt of one call knows about the run it belongs to."""
+
+    run_id: str
+    attempt: int = 1
+
+    def __post_init__(self) -> None:
+        if self.attempt < 1:
+            raise ValueError("attempt must be positive")
+
+
+def idempotency_key(run_id: str, call_id: str) -> str:
+    """Identical across every attempt of one call — that is the whole point.
+
+    Deriving it from the run and call rather than the attempt is what lets a
+    downstream recognise the retry as the same logical operation (ADR-0012).
+    """
+    return f"{run_id}:{call_id}"
 
 
 @dataclass(frozen=True)
@@ -34,10 +64,16 @@ class Tool:
     output_schema: dict[str, Any] | None = None
     side_effect: Literal["none", "local", "external"] = "none"
     approval: Literal["never", "always", "policy"] = "never"
+    idempotent: bool = False
+    max_attempts: int = 1
 
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("tool name must not be empty")
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        if self.max_attempts > 1 and not self.idempotent:
+            raise ValueError(f"tool {self.name!r} cannot retry without declaring itself idempotent")
         try:
             Draft202012Validator.check_schema(self.input_schema)
             if self.output_schema is not None:
@@ -68,11 +104,15 @@ class Tool:
 class ToolExecutor(Protocol):
     def validate(self, call: ToolCall, tool: Tool) -> ToolResult | None: ...
 
-    def execute(self, call: ToolCall, tool: Tool) -> ToolResult: ...
+    def execute(self, call: ToolCall, tool: Tool, context: ToolContext) -> ToolResult: ...
 
 
 class LocalToolExecutor:
-    """Validate and invoke in-process tools without exposing exceptions."""
+    """Validate and invoke in-process tools without exposing exceptions.
+
+    One attempt per call. Whether to attempt again is run policy and lives in
+    the runner, which owns budgets and the event log.
+    """
 
     def validate(self, call: ToolCall, tool: Tool) -> ToolResult | None:
         try:
@@ -81,13 +121,19 @@ class LocalToolExecutor:
             return ToolResult("error", f"invalid input for {tool.name}: {exc.message}")
         return None
 
-    def execute(self, call: ToolCall, tool: Tool) -> ToolResult:
+    def execute(self, call: ToolCall, tool: Tool, context: ToolContext) -> ToolResult:
+        # Re-validated even though the runner validates whole batches first:
+        # this is a trust boundary, and it must hold for any caller.
         invalid = self.validate(call, tool)
         if invalid is not None:
             return invalid
 
+        arguments = dict(call.arguments)
+        if tool.idempotent:
+            arguments["idempotency_key"] = idempotency_key(context.run_id, call.id)
+
         try:
-            output = tool.execute(**call.arguments)
+            output = tool.execute(**arguments)
         # Tool code is an untrusted extension boundary. Its exception types are
         # unknowable, and none may escape into model context with secret details.
         except Exception:  # noqa: BLE001
@@ -122,4 +168,12 @@ class ToolRegistry:
         return tuple(tool.definition for tool in self._tools)
 
 
-__all__ = ["LocalToolExecutor", "Tool", "ToolExecutor", "ToolRegistry", "ToolResult"]
+__all__ = [
+    "LocalToolExecutor",
+    "Tool",
+    "ToolContext",
+    "ToolExecutor",
+    "ToolRegistry",
+    "ToolResult",
+    "idempotency_key",
+]

@@ -75,6 +75,48 @@ def test_openai_wire_normalizes_all_tool_calls_and_preserves_ids():
     assert sent["tools"][0]["function"]["name"] == "lookup"
 
 
+def test_both_wires_keep_the_text_the_model_wrote_alongside_its_tool_calls():
+    """The model's reasoning-out-loud before a tool call is part of the turn.
+    Dropping it rewrote history as if the call had come from nowhere."""
+    call = SimpleNamespace(
+        id="one", function=SimpleNamespace(name="lookup", arguments=json.dumps({"term": "a"}))
+    )
+    client = MagicMock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="Let me look that up.", tool_calls=[call]),
+                finish_reason="tool_calls",
+            )
+        ],
+        model="qwen",
+        usage=SimpleNamespace(prompt_tokens=4, completion_tokens=3, prompt_tokens_details=None),
+    )
+
+    with patch("openai.OpenAI", return_value=client):
+        result = openai_compatible.call_model(
+            parse_spec("vllm:qwen"), system="s", messages=MESSAGES, tools=TOOLS
+        )
+    assert result.decision.text == "Let me look that up."
+
+    anthropic_client = MagicMock()
+    anthropic_client.messages.create.return_value = SimpleNamespace(
+        stop_reason="tool_use",
+        content=[
+            SimpleNamespace(type="text", text="Let me look that up."),
+            SimpleNamespace(type="tool_use", id="one", name="lookup", input={"term": "a"}),
+        ],
+        model="claude",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=2, cache_read_input_tokens=0),
+    )
+
+    with patch("anthropic.Anthropic", return_value=anthropic_client):
+        result = anthropic.call_model(
+            parse_spec("anthropic"), system="s", messages=MESSAGES, tools=TOOLS
+        )
+    assert result.decision.text == "Let me look that up."
+
+
 def test_openai_wire_translates_assistant_and_tool_history():
     prior = (
         UserMessage((TextBlock("find it"),)),

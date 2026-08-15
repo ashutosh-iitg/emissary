@@ -1,18 +1,27 @@
 """Bounded agent execution, tools, policy, context, state, and events."""
 
 from .agent import Agent, RunLimits
-from .context import CompleteHistory, ContextPolicy, RecentHistory
+from .context import CompleteHistory, ContextOp, ContextPolicy, RecentHistory
 from .events import EventSink, InMemoryEventSink, RunEvent
 from .policy import ApprovalDecision, Approver
+from .projection import derive_messages
 from .runner import run
 from .state import RunResult, RunStatus, StopReason
-from .tools import LocalToolExecutor, Tool, ToolExecutor, ToolRegistry, ToolResult
+from .tools import (
+    LocalToolExecutor,
+    Tool,
+    ToolContext,
+    ToolExecutor,
+    ToolRegistry,
+    ToolResult,
+)
 
 __all__ = [
     "Agent",
     "ApprovalDecision",
     "Approver",
     "CompleteHistory",
+    "ContextOp",
     "ContextPolicy",
     "EventSink",
     "InMemoryEventSink",
@@ -24,8 +33,10 @@ __all__ = [
     "RunStatus",
     "StopReason",
     "Tool",
+    "ToolContext",
     "ToolExecutor",
     "ToolRegistry",
     "ToolResult",
+    "derive_messages",
     "run",
 ]

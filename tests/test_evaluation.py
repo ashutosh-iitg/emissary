@@ -12,7 +12,6 @@ def result(*, kinds=("run_started", "run_completed"), completed=True):
         StopReason.COMPLETED if completed else StopReason.MODEL_ERROR,
         FinalOutput(text="done") if completed else None,
         Usage(4, 2),
-        (),
         events,
     )
 

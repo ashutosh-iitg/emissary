@@ -1,12 +1,20 @@
 from .eval import EvaluationReport, EvaluationScenario, EventGrader, evaluate
 from .harness.agent import Agent, RunLimits
-from .harness.context import CompleteHistory, ContextPolicy, RecentHistory
+from .harness.context import CompleteHistory, ContextOp, ContextPolicy, RecentHistory
 from .harness.events import EventSink, InMemoryEventSink, RunEvent
 from .harness.policy import ApprovalDecision, Approver
+from .harness.projection import derive_messages
 from .harness.runner import run
 from .harness.state import RunResult, RunStatus, StopReason
-from .harness.tools import LocalToolExecutor, Tool, ToolExecutor, ToolRegistry, ToolResult
-from .llm.calls import Block, call_choice, call_tool
+from .harness.tools import (
+    LocalToolExecutor,
+    Tool,
+    ToolContext,
+    ToolExecutor,
+    ToolRegistry,
+    ToolResult,
+)
+from .llm.calls import call_choice, call_tool
 from .llm.decision import (
     FinalOutput,
     ModelCapabilities,
@@ -21,6 +29,7 @@ from .llm.decision import (
 from .llm.errors import CapabilityError, ProviderError
 from .llm.messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from .llm.model import FallbackModelCaller, ModelCaller, SpecModelCaller, call_model
+from .llm.prompt import Prompt
 from .llm.provider import PROVIDERS, Provider, Spec, key_present, parse_spec
 from .llm.result import CallResult, ChoiceResult
 from .llm.selection import call_tool_with_fallback, resolve_spec
@@ -32,11 +41,11 @@ __all__ = [
     "ApprovalDecision",
     "Approver",
     "AssistantMessage",
-    "Block",
     "CallResult",
     "CapabilityError",
     "ChoiceResult",
     "CompleteHistory",
+    "ContextOp",
     "ContextPolicy",
     "EvaluationReport",
     "EvaluationScenario",
@@ -51,6 +60,7 @@ __all__ = [
     "ModelCapabilities",
     "ModelResult",
     "ModelSettings",
+    "Prompt",
     "Provider",
     "ProviderError",
     "RecentHistory",
@@ -68,6 +78,7 @@ __all__ = [
     "Tool",
     "ToolCall",
     "ToolCalls",
+    "ToolContext",
     "ToolDefinition",
     "ToolExecutor",
     "ToolMessage",
@@ -79,6 +90,7 @@ __all__ = [
     "call_model",
     "call_tool",
     "call_tool_with_fallback",
+    "derive_messages",
     "deserialize_run",
     "evaluate",
     "key_present",

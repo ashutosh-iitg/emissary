@@ -1,6 +1,6 @@
 """Provider-neutral LLM calls, contracts, selection, and adapters."""
 
-from .calls import Block, call_choice, call_tool
+from .calls import call_choice, call_tool
 from .decision import (
     FinalOutput,
     ModelCapabilities,
@@ -15,6 +15,7 @@ from .decision import (
 from .errors import CapabilityError, ProviderError
 from .messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from .model import FallbackModelCaller, ModelCaller, SpecModelCaller, call_model
+from .prompt import Prompt
 from .provider import PROVIDERS, Provider, Spec, key_present, parse_spec
 from .result import CallResult, ChoiceResult
 from .selection import call_tool_with_fallback, resolve_spec
@@ -22,7 +23,6 @@ from .selection import call_tool_with_fallback, resolve_spec
 __all__ = [
     "PROVIDERS",
     "AssistantMessage",
-    "Block",
     "CallResult",
     "CapabilityError",
     "ChoiceResult",
@@ -33,6 +33,7 @@ __all__ = [
     "ModelCapabilities",
     "ModelResult",
     "ModelSettings",
+    "Prompt",
     "Provider",
     "ProviderError",
     "Refusal",

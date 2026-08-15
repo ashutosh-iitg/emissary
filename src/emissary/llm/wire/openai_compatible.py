@@ -17,10 +17,9 @@ from ..decision import (
     Usage,
 )
 from ..errors import ProviderError, retryable_status
-from ..messages import AssistantMessage, Message, ToolMessage, UserMessage
+from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult, ChoiceResult
-from .types import Block
 
 TOP_LOGPROBS = 20
 """How many alternatives to ask for at the scored position.
@@ -156,7 +155,7 @@ def call_model(
             if not isinstance(arguments, dict):
                 raise ProviderError(f"{spec}: tool arguments were not a JSON object")
             calls.append(ToolCall(raw_call.id, raw_call.function.name, arguments))
-        decision = ToolCalls(tuple(calls))
+        decision = ToolCalls(tuple(calls), text=message.content or None)
     elif message.content:
         decision = FinalOutput(text=message.content)
     else:
@@ -177,7 +176,9 @@ def call_model(
     )
 
 
-def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, Any]) -> CallResult:
+def call_tool(
+    spec: Spec, *, system: str, blocks: tuple[TextBlock, ...], tool: dict[str, Any]
+) -> CallResult:
     import openai
 
     provider = spec.provider
@@ -193,7 +194,7 @@ def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, A
 
     # No cache breakpoint on this wire — every block is concatenated into one
     # user message, unlike the Anthropic wire's cache-marked content blocks.
-    user_content = "\n\n".join(block["text"] for block in blocks)
+    user_content = "\n\n".join(block.text for block in blocks)
 
     try:
         response = client.chat.completions.create(
@@ -239,7 +240,9 @@ def call_tool(spec: Spec, *, system: str, blocks: list[Block], tool: dict[str, A
     )
 
 
-def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[str]) -> ChoiceResult:
+def call_choice(
+    spec: Spec, *, system: str, blocks: tuple[TextBlock, ...], labels: list[str]
+) -> ChoiceResult:
     """One constrained single-token call, scored from the model's own logprobs.
 
     Generates **one** token and reads the alternatives considered at that
@@ -257,7 +260,7 @@ def call_choice(spec: Spec, *, system: str, blocks: list[Block], labels: list[st
     provider = spec.provider
     _validate_labels(spec, labels)
 
-    user_content = "\n\n".join(block["text"] for block in blocks)
+    user_content = "\n\n".join(block.text for block in blocks)
     extra: dict[str, Any] = {}
     if provider.guided_choice:
         # vLLM only — constrains decoding to the label set so the sampled
