@@ -6,6 +6,7 @@ from ..decision import (
     FinalOutput,
     ModelResult,
     ModelSettings,
+    ReasoningState,
     Refusal,
     ToolCall,
     ToolCalls,
@@ -16,6 +17,13 @@ from ..errors import ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult
+from .thinking import thinking_kwargs
+
+WIRE = "anthropic"
+"""Tags reasoning state this wire issues, so no other wire replays it."""
+
+THINKING_TYPES = ("thinking", "redacted_thinking")
+"""Block types that carry signed reasoning and must be echoed back unchanged."""
 
 
 def _anthropic_messages(messages: tuple[Message, ...]) -> list[dict[str, Any]]:
@@ -37,6 +45,11 @@ def _anthropic_messages(messages: tuple[Message, ...]) -> list[dict[str, Any]]:
             )
         elif isinstance(message, AssistantMessage):
             content: list[dict[str, Any]] = []
+            # Thinking blocks lead the turn and carry a signature the API
+            # verifies. Dropping or reordering them provokes a 400 as surely as
+            # editing one would, so they go back first and untouched.
+            if message.reasoning is not None and message.reasoning.wire == WIRE:
+                content.extend(dict(block) for block in message.reasoning.blocks)
             if message.text:
                 content.append({"type": "text", "text": message.text})
             content.extend(
@@ -94,6 +107,7 @@ def call_model(
         ]
         if configured.tool_choice == "required":
             kwargs["tool_choice"] = {"type": "any"}
+    kwargs.update(thinking_kwargs(spec, configured.thinking))
 
     try:
         response = anthropic.Anthropic().messages.create(**kwargs)
@@ -121,6 +135,9 @@ def call_model(
         else:
             raise ProviderError(f"{spec}: response contained no usable decision")
 
+    thinking_blocks = tuple(
+        _thinking_block(part) for part in response.content if part.type in THINKING_TYPES
+    )
     usage = response.usage
     return ModelResult(
         decision=decision,
@@ -132,7 +149,21 @@ def call_model(
             cached_input_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
         ),
         finish_reason=response.stop_reason,
+        thinking="\n".join(block["thinking"] for block in thinking_blocks if block.get("thinking"))
+        or None,
+        reasoning=(ReasoningState(wire=WIRE, blocks=thinking_blocks) if thinking_blocks else None),
     )
+
+
+def _thinking_block(part) -> dict[str, Any]:
+    """A thinking block as JSON, keeping exactly the fields the API verifies.
+
+    `redacted_thinking` has no readable text at all — only `data` — which is
+    why the round-trip cannot be reconstructed from `ModelResult.thinking`.
+    """
+    if part.type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": part.data}
+    return {"type": "thinking", "thinking": part.thinking, "signature": part.signature}
 
 
 def call_tool(

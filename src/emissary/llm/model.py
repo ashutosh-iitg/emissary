@@ -34,6 +34,12 @@ def call_model(
         raise ProviderError(f"{spec.provider.key_env} is not set for provider {spec.name!r}")
     if tools and not spec.provider.capabilities.tool_calling:
         raise CapabilityError(f"{spec}: this provider does not support tool calling")
+    if (
+        settings is not None
+        and settings.thinking != "default"
+        and not spec.provider.capabilities.thinking
+    ):
+        raise CapabilityError(f"{spec}: this provider does not support thinking control")
     if spec.provider.wire == "anthropic":
         return anthropic.call_model(
             spec, system=system, messages=messages, tools=tools, settings=settings

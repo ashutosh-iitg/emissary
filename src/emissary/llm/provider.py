@@ -43,6 +43,11 @@ class Provider:
     # works without it (the logprobs are read the same way either way); it
     # just guarantees the sampled token is one of the labels.
     guided_choice: bool = False
+    # Which thinking dialect this provider speaks (ADR-0019). A neutral name;
+    # `llm/wire/thinking.py` owns the payload it maps to. Left "none" wherever
+    # the provider's parameter could not be confirmed against its own docs —
+    # same rule as `default_model`, for the same reason.
+    thinking_dialect: str = "none"
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
 
     def resolved_base_url(self) -> str | None:
@@ -60,7 +65,8 @@ PROVIDERS: dict[str, Provider] = {
         key_env="ANTHROPIC_API_KEY",
         default_model="claude-opus-5",
         strict=True,
-        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True),
+        thinking_dialect="anthropic",
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, thinking=True),
     ),
     "openai": Provider(
         wire="openai",
@@ -77,14 +83,22 @@ PROVIDERS: dict[str, Provider] = {
         key_env="MOONSHOT_API_KEY",
         base_url="https://api.moonshot.ai/v1",
         default_model="kimi-k3",
-        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
+        # K3 always reasons and is tuned by `reasoning_effort`; it has no off
+        # switch, so `thinking="off"` fails rather than being ignored.
+        thinking_dialect="effort",
+        capabilities=ModelCapabilities(
+            tool_calling=True, parallel_tool_calls=True, logprobs=True, thinking=True
+        ),
     ),
     "deepseek": Provider(
         wire="openai",
         key_env="DEEPSEEK_API_KEY",
         base_url="https://api.deepseek.com",
         default_model="deepseek-v4-pro",
-        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
+        thinking_dialect="deepseek",
+        capabilities=ModelCapabilities(
+            tool_calling=True, parallel_tool_calls=True, logprobs=True, thinking=True
+        ),
     ),
     "gemini": Provider(
         wire="openai",

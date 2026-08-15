@@ -72,6 +72,30 @@ class Refusal:
             raise ValueError("refusal reason must not be empty")
 
 
+@dataclass(frozen=True)
+class ReasoningState:
+    """Opaque provider reasoning the next request must echo back (ADR-0018).
+
+    Not a display value — a correctness obligation. Anthropic rejects a
+    tampered thinking signature, Gemini 3+ rejects a tool follow-up missing
+    `thought_signature`, and DeepSeek/Kimi return 400 on the second turn when
+    `reasoning_content` is absent from the assistant history.
+
+    `blocks` is inert JSON to everything outside the wire named in `wire`;
+    that tag is what stops a fallback from forwarding one provider's reasoning
+    to another that cannot parse it.
+    """
+
+    wire: str
+    blocks: tuple[dict[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if not self.wire:
+            raise ValueError("reasoning state must name the wire that issued it")
+        if not self.blocks:
+            raise ValueError("reasoning state must carry at least one block")
+
+
 ModelDecision = FinalOutput | ToolCalls | Refusal
 
 
@@ -96,27 +120,55 @@ class ModelCapabilities:
     parallel_tool_calls: bool = False
     structured_output: bool = False
     logprobs: bool = False
+    # Whether the provider accepts a thinking request at all. Which of the
+    # explicit values it can express is the dialect's business (ADR-0019).
+    thinking: bool = False
+
+
+Thinking = Literal["default", "off", "on", "visible"]
+"""What the caller wants, not what any provider calls it (ADR-0019).
+
+`default` sends no thinking parameter, preserving each provider's own
+behaviour; `off` suppresses reasoning; `on` requests it without requiring the
+text back; `visible` also asks for the text. Anything a provider's dialect
+cannot express raises `CapabilityError` rather than being dropped, because
+each explicit value is a promise about cost or disclosure.
+"""
+
+THINKING_VALUES: tuple[Thinking, ...] = ("default", "off", "on", "visible")
 
 
 @dataclass(frozen=True)
 class ModelSettings:
     max_output_tokens: int | None = None
     tool_choice: Literal["auto", "required", "none"] = "auto"
+    thinking: Thinking = "default"
 
     def __post_init__(self) -> None:
         if self.max_output_tokens is not None and self.max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
         if self.tool_choice not in ("auto", "required", "none"):
             raise ValueError("tool_choice must be 'auto', 'required', or 'none'")
+        if self.thinking not in THINKING_VALUES:
+            raise ValueError(f"thinking must be one of {THINKING_VALUES}")
 
 
 @dataclass(frozen=True)
 class ModelResult:
+    """One normalized model turn.
+
+    `thinking` is readable reasoning text — for logs and evaluation, safe to
+    truncate or drop. `reasoning` is the opaque state the next request must
+    carry back. They are separate because their rules are opposite (ADR-0018).
+    """
+
     decision: ModelDecision
     provider: str
     model: str
     usage: Usage
     finish_reason: str | None = None
+    thinking: str | None = None
+    reasoning: ReasoningState | None = None
 
     def __post_init__(self) -> None:
         if not self.provider:
@@ -126,12 +178,15 @@ class ModelResult:
 
 
 __all__ = [
+    "THINKING_VALUES",
     "FinalOutput",
     "ModelCapabilities",
     "ModelDecision",
     "ModelResult",
     "ModelSettings",
+    "ReasoningState",
     "Refusal",
+    "Thinking",
     "ToolCall",
     "ToolCalls",
     "ToolDefinition",

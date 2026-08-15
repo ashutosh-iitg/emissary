@@ -15,6 +15,7 @@ from ..llm.decision import (
     FinalOutput,
     ModelDecision,
     ModelResult,
+    ReasoningState,
     Refusal,
     ToolCall,
     ToolCalls,
@@ -50,6 +51,18 @@ def _decision_data(decision: ModelDecision) -> dict[str, Any]:
     raise TypeError(f"unknown model decision {type(decision).__name__}")
 
 
+def _reasoning_data(reasoning: ReasoningState | None) -> dict[str, Any] | None:
+    if reasoning is None:
+        return None
+    return {"wire": reasoning.wire, "blocks": list(reasoning.blocks)}
+
+
+def _reasoning_from_data(data: dict[str, Any] | None) -> ReasoningState | None:
+    if not data:
+        return None
+    return ReasoningState(wire=data["wire"], blocks=tuple(data["blocks"]))
+
+
 def user_message_data(message: UserMessage) -> dict[str, Any]:
     return {"content": [{"text": block.text, "cache": block.cache} for block in message.content]}
 
@@ -66,6 +79,10 @@ def model_result_data(result: ModelResult) -> dict[str, Any]:
             "cached_input_tokens": result.usage.cached_input_tokens,
         },
         "finish_reason": result.finish_reason,
+        # Both recorded, neither interchangeable: `thinking` is for readers,
+        # `reasoning` is what the next request must carry back (ADR-0018).
+        "thinking": result.thinking,
+        "reasoning": _reasoning_data(result.reasoning),
     }
 
 
@@ -110,6 +127,9 @@ def model_result_from_data(data: dict[str, Any]) -> ModelResult:
         model=data["model"],
         usage=Usage(usage["input_tokens"], usage["output_tokens"], usage["cached_input_tokens"]),
         finish_reason=data["finish_reason"],
+        # `.get` keeps fixtures recorded before reasoning was captured loadable.
+        thinking=data.get("thinking"),
+        reasoning=_reasoning_from_data(data.get("reasoning")),
     )
 
 
@@ -133,6 +153,7 @@ def message_to_data(message: Message) -> dict[str, Any]:
             "type": "assistant",
             "text": message.text,
             "tool_calls": [_call_data(call) for call in message.tool_calls],
+            "reasoning": _reasoning_data(message.reasoning),
         }
     if isinstance(message, ToolMessage):
         return {
@@ -150,7 +171,9 @@ def message_from_data(data: dict[str, Any]) -> Message:
         return _user_message(data)
     if kind == "assistant":
         return AssistantMessage(
-            data["text"], tuple(_call_from_data(call) for call in data["tool_calls"])
+            data["text"],
+            tuple(_call_from_data(call) for call in data["tool_calls"]),
+            _reasoning_from_data(data.get("reasoning")),
         )
     if kind == "tool":
         return ToolMessage(data["call_id"], data["tool_name"], data["content"])
@@ -161,21 +184,28 @@ def _user_message(data: dict[str, Any]) -> UserMessage:
     return UserMessage(tuple(TextBlock(b["text"], b["cache"]) for b in data["content"]))
 
 
-def _assistant_message(data: dict[str, Any]) -> AssistantMessage | None:
+def _assistant_message(event_data: dict[str, Any]) -> AssistantMessage | None:
     """A refusal and a value-only final output project nothing.
 
     A refusal reason is harness-authored prose, not something the model said; a
     structured value has no faithful rendering as assistant text. Both remain
     fully recorded in the log.
+
+    Takes the whole `model_call_completed` payload, not just its decision,
+    because reasoning state belongs to the turn rather than to which decision
+    the model happened to reach.
     """
+    data = event_data["decision"]
+    reasoning = _reasoning_from_data(event_data.get("reasoning"))
     kind = data["kind"]
     if kind == "tool_calls":
         return AssistantMessage(
             text=data.get("text") or None,
             tool_calls=tuple(_call_from_data(c) for c in data["calls"]),
+            reasoning=reasoning,
         )
     if kind == "final_output" and data["text"]:
-        return AssistantMessage(text=data["text"])
+        return AssistantMessage(text=data["text"], reasoning=reasoning)
     return None
 
 
@@ -223,7 +253,7 @@ def derive_messages(events: Iterable[RunEvent], *, apply_ops: bool = True) -> tu
         if event.kind == "user_message":
             surface.append(_user_message(event.data))
         elif event.kind == "model_call_completed":
-            message = _assistant_message(event.data["decision"])
+            message = _assistant_message(event.data)
             if message is not None:
                 surface.append(message)
         elif event.kind == "tool_call_completed":

@@ -11,6 +11,7 @@ from ..decision import (
     FinalOutput,
     ModelResult,
     ModelSettings,
+    ReasoningState,
     ToolCall,
     ToolCalls,
     ToolDefinition,
@@ -20,6 +21,10 @@ from ..errors import ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
 from ..result import CallResult, ChoiceResult
+from .thinking import thinking_kwargs
+
+WIRE = "openai"
+"""Tags reasoning state this wire issues, so no other wire replays it."""
 
 TOP_LOGPROBS = 20
 """How many alternatives to ask for at the scored position.
@@ -78,6 +83,13 @@ def _openai_messages(system: str, messages: tuple[Message, ...]) -> list[dict[st
             )
         elif isinstance(message, AssistantMessage):
             item: dict[str, Any] = {"role": "assistant", "content": message.text}
+            # DeepSeek and Kimi reject the next turn outright when thinking mode
+            # is on and this is missing: "reasoning_content in thinking mode
+            # must be passed back to the API". Rebuilding history without it is
+            # the documented way OpenAI-compatible clients break on turn two.
+            if message.reasoning is not None and message.reasoning.wire == WIRE:
+                for block in message.reasoning.blocks:
+                    item.update(block)
             if message.tool_calls:
                 item["tool_calls"] = [
                     {
@@ -132,6 +144,9 @@ def call_model(
     if request_tools:
         kwargs["tools"] = request_tools
         kwargs["tool_choice"] = configured.tool_choice
+    # Raises rather than returns for a setting this provider cannot express, so
+    # a caller who asked for `off` is never quietly billed for reasoning.
+    kwargs.update(thinking_kwargs(spec, configured.thinking))
 
     try:
         response = _client(spec).chat.completions.create(**kwargs)
@@ -161,6 +176,15 @@ def call_model(
     else:
         raise ProviderError(f"{spec}: response contained no usable decision")
 
+    # Captured whether or not it was requested: a server that volunteered this
+    # stated a fact, and the record keeps what arrived (ADR-0019).
+    thinking = getattr(message, "reasoning_content", None) or None
+    reasoning = (
+        ReasoningState(wire=WIRE, blocks=({"reasoning_content": thinking},))
+        if thinking is not None
+        else None
+    )
+
     usage = response.usage
     details = getattr(usage, "prompt_tokens_details", None)
     return ModelResult(
@@ -173,6 +197,8 @@ def call_model(
             cached_input_tokens=getattr(details, "cached_tokens", 0) or 0,
         ),
         finish_reason=choice.finish_reason,
+        thinking=thinking,
+        reasoning=reasoning,
     )
 
 
