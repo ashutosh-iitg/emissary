@@ -5,7 +5,7 @@ from .context import CompleteHistory, ContextOp, ContextPolicy, RecentHistory
 from .events import EventSink, InMemoryEventSink, RunEvent
 from .policy import ApprovalDecision, Approver
 from .projection import derive_messages
-from .runner import run
+from .runner import arun, run
 from .state import RunResult, RunStatus, StopReason
 from .tools import (
     LocalToolExecutor,
@@ -37,6 +37,7 @@ __all__ = [
     "ToolExecutor",
     "ToolRegistry",
     "ToolResult",
+    "arun",
     "derive_messages",
     "run",
 ]

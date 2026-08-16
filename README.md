@@ -168,9 +168,23 @@ awaited — the point of streaming from async code is usually to forward deltas
 somewhere that must be awaited, which a sync-only sink could not do without
 buffering or reordering.
 
-**The bundled runner is still synchronous** (ADR-0005, amended by ADR-0023).
-The async pieces above are the boundary an async agent loop would be built on,
-not an async loop itself.
+The agent runner is async too — `arun` beside `run`:
+
+```python
+results = await asyncio.gather(*(
+    emissary.arun(agent, task, caller=caller) for task in tasks
+))
+```
+
+Both drive the *same* loop. `harness/machine.py` holds every policy — limits,
+validation ordering, circuit breaking, retries, terminal conditions — and
+yields the three things it cannot do itself (`CallModel`, `ValidateTool`,
+`ExecuteTool`); `run` and `arun` perform them and send the outcomes back. A new
+limit is written once, not once per concurrency model (ADR-0024).
+
+`arun` accepts a synchronous executor: most tools are local computation, and
+async at the model boundary should not force every one of them to be a
+coroutine.
 
 ## Selection and fallback
 

@@ -4,7 +4,7 @@ from .harness.context import CompleteHistory, ContextOp, ContextPolicy, RecentHi
 from .harness.events import EventSink, InMemoryEventSink, RunEvent
 from .harness.policy import ApprovalDecision, Approver
 from .harness.projection import derive_messages
-from .harness.runner import run
+from .harness.runner import arun, run
 from .harness.state import RunResult, RunStatus, StopReason
 from .harness.tools import (
     LocalToolExecutor,
@@ -106,6 +106,7 @@ __all__ = [
     "acall_choice",
     "acall_model",
     "acall_tool",
+    "arun",
     "call_choice",
     "call_model",
     "call_tool",

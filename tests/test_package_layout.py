@@ -38,6 +38,8 @@ def test_implementation_is_grouped_by_single_responsibility():
         "llm/wire/openai_compatible.py",
         "llm/wire/thinking.py",
         "harness/runner.py",
+        "harness/machine.py",
+        "harness/effects.py",
         "harness/projection.py",
         "harness/tools.py",
         "harness/context.py",
