@@ -1,24 +1,25 @@
-"""Bounded synchronous plan/act/observe state machine."""
+"""Two drivers over one loop (ADR-0024).
 
+Neither of these holds policy. `machine.agent_machine` decides everything and
+yields the three things it cannot do itself; these perform them and send the
+outcomes back. `run` and `arun` differ by one `await`, which is the property
+that keeps a new limit or terminal condition from having to be written twice.
+"""
+
+import inspect
 import uuid
+from typing import Any
 
-from ..llm.decision import FinalOutput, Refusal, ToolCalls, Usage
 from ..llm.errors import ProviderError
-from ..llm.messages import TextBlock, UserMessage
-from ..llm.model import ModelCaller
+from ..llm.model import AsyncModelCaller, ModelCaller
 from .agent import Agent
-from .context import CompleteHistory, ContextPolicy
-from .events import EventSink, InMemoryEventSink, RunEvent, new_event
-from .policy import ApprovalDecision, Approver, approval_for
-from .projection import (
-    context_op_data,
-    derive_messages,
-    model_result_data,
-    tool_result_data,
-    user_message_data,
-)
-from .state import RunResult, RunStatus, StopReason
-from .tools import LocalToolExecutor, ToolContext, ToolExecutor, ToolRegistry, ToolResult
+from .context import ContextPolicy
+from .effects import CallModel, Effect, ValidateTool
+from .events import EventSink
+from .machine import agent_machine
+from .policy import Approver
+from .state import RunResult
+from .tools import LocalToolExecutor, ToolExecutor
 
 
 def run(
@@ -32,140 +33,95 @@ def run(
     approver: Approver | None = None,
 ) -> RunResult:
     """Run one agent until a typed terminal outcome is reached."""
-    if not task:
-        raise ValueError("task must not be empty")
+    machine = agent_machine(
+        agent,
+        task,
+        run_id=uuid.uuid4().hex,
+        event_sink=event_sink,
+        context_policy=context_policy,
+        approver=approver,
+    )
+    active = executor or LocalToolExecutor()
+    outcome: Any = None
+    failure: ProviderError | None = None
 
-    run_id = uuid.uuid4().hex
-    active_executor = executor or LocalToolExecutor()
-    sink = event_sink or InMemoryEventSink()
-    context = context_policy or CompleteHistory()
-    registry = ToolRegistry(agent.tools)
-    events: list[RunEvent] = []
-    usage = Usage(0, 0)
-    tool_count = 0
-    consecutive_errors = 0
-    tool_failures: dict[str, int] = {}
-    open_circuits: set[str] = set()
-
-    def emit(kind: str, **data) -> None:
-        event = new_event(run_id, len(events) + 1, kind, **data)
-        events.append(event)
-        sink.emit(event)
-
-    def finish(
-        status: RunStatus, reason: StopReason, output: FinalOutput | None = None
-    ) -> RunResult:
-        kind = "run_completed" if status is RunStatus.COMPLETED else "run_stopped"
-        emit(kind, status=status.value, reason=reason.value)
-        return RunResult(run_id, status, reason, output, usage, tuple(events))
-
-    emit("run_started", agent=agent.name)
-    emit("user_message", **user_message_data(UserMessage((TextBlock(task),))))
-
-    for turn in range(agent.limits.max_turns):
-        surface = derive_messages(events)
-        ops = context.plan(surface)
-        if ops:
-            for op in ops:
-                emit("context_compacted", **context_op_data(op))
-            # Re-fold rather than apply locally: the surface the model sees comes
-            # from exactly one code path, so runner and projection cannot drift.
-            surface = derive_messages(events)
-
-        emit("model_call_started", turn=turn + 1)
+    while True:
         try:
-            model_result = caller(
-                system=agent.instructions,
-                messages=surface,
-                tools=registry.definitions,
-                settings=agent.model_settings,
-            )
+            effect = machine.throw(failure) if failure is not None else machine.send(outcome)
+        except StopIteration as stop:
+            return stop.value
+        failure, outcome = None, None
+        try:
+            outcome = _perform(effect, caller, active)
         except ProviderError as exc:
-            emit("model_call_failed", retryable=exc.retryable)
-            return finish(RunStatus.FAILED, StopReason.MODEL_ERROR)
+            # Reported by throwing in, so the machine's handling reads as the
+            # `try/except` around a direct call that it replaced.
+            failure = exc
 
-        usage = Usage(
-            usage.input_tokens + model_result.usage.input_tokens,
-            usage.output_tokens + model_result.usage.output_tokens,
-            usage.cached_input_tokens + model_result.usage.cached_input_tokens,
+
+async def arun(
+    agent: Agent,
+    task: str,
+    *,
+    caller: AsyncModelCaller,
+    executor: ToolExecutor | None = None,
+    event_sink: EventSink | None = None,
+    context_policy: ContextPolicy | None = None,
+    approver: Approver | None = None,
+) -> RunResult:
+    """`run` on an event loop — the same machine, awaiting each effect.
+
+    The executor may be synchronous: most tools are local computation, and
+    async at the model boundary should not force every one of them to be a
+    coroutine.
+    """
+    machine = agent_machine(
+        agent,
+        task,
+        run_id=uuid.uuid4().hex,
+        event_sink=event_sink,
+        context_policy=context_policy,
+        approver=approver,
+    )
+    active = executor or LocalToolExecutor()
+    outcome: Any = None
+    failure: ProviderError | None = None
+
+    while True:
+        try:
+            effect = machine.throw(failure) if failure is not None else machine.send(outcome)
+        except StopIteration as stop:
+            return stop.value
+        failure, outcome = None, None
+        try:
+            outcome = await _aperform(effect, caller, active)
+        except ProviderError as exc:
+            failure = exc
+
+
+def _perform(effect: Effect, caller: ModelCaller, executor: ToolExecutor) -> Any:
+    """Exhaustive over the effect union; a missing branch would hang the
+    machine rather than raise, so the union is kept small (ADR-0024)."""
+    if isinstance(effect, CallModel):
+        return caller(
+            system=effect.system,
+            messages=effect.messages,
+            tools=effect.tools,
+            settings=effect.settings,
         )
-        emit("model_call_completed", **model_result_data(model_result))
-        if (
-            agent.limits.max_input_tokens is not None
-            and usage.input_tokens > agent.limits.max_input_tokens
-        ) or (
-            agent.limits.max_output_tokens is not None
-            and usage.output_tokens > agent.limits.max_output_tokens
-        ):
-            return finish(RunStatus.STOPPED, StopReason.TOKEN_LIMIT)
-
-        decision = model_result.decision
-        if isinstance(decision, FinalOutput):
-            return finish(RunStatus.COMPLETED, StopReason.COMPLETED, decision)
-        if isinstance(decision, Refusal):
-            return finish(RunStatus.REFUSED, StopReason.REFUSAL)
-        if not isinstance(decision, ToolCalls):
-            return finish(RunStatus.FAILED, StopReason.MODEL_ERROR)
-
-        if tool_count + len(decision.calls) > agent.limits.max_tool_calls:
-            return finish(RunStatus.STOPPED, StopReason.MAX_TOOL_CALLS)
-
-        resolved = []
-        for call in decision.calls:
-            try:
-                tool = registry.resolve(call.name)
-            except KeyError:
-                emit("tool_call_rejected", call_id=call.id, reason="unknown_tool")
-                return finish(RunStatus.FAILED, StopReason.INVALID_TOOL)
-            invalid = active_executor.validate(call, tool)
-            if invalid is not None:
-                emit("tool_call_rejected", call_id=call.id, reason=invalid.summary)
-                return finish(RunStatus.FAILED, StopReason.INVALID_TOOL)
-            resolved.append((call, tool))
-
-        for call, tool in resolved:
-            approval = approval_for(call, tool, approver)
-            emit("approval_resolved", call_id=call.id, decision=approval.value)
-            if approval is ApprovalDecision.PAUSE:
-                return finish(RunStatus.PAUSED, StopReason.APPROVAL_REQUIRED)
-            if approval is ApprovalDecision.REJECT:
-                return finish(RunStatus.STOPPED, StopReason.APPROVAL_REJECTED)
-            if call.name in open_circuits:
-                outcome = ToolResult(
-                    "error", f"{call.name} is unavailable after repeated failures in this run"
-                )
-            else:
-                emit("tool_call_started", call_id=call.id, tool=call.name)
-                for attempt in range(1, tool.max_attempts + 1):
-                    outcome = active_executor.execute(call, tool, ToolContext(run_id, attempt))
-                    # `max_attempts > 1` already implies idempotent (Tool rejects
-                    # otherwise), so a retryable failure is safe to repeat here.
-                    if not outcome.retryable or attempt == tool.max_attempts:
-                        break
-                    emit(
-                        "tool_call_retried",
-                        call_id=call.id,
-                        attempt=attempt,
-                        reason=outcome.summary,
-                    )
-                if outcome.status == "error":
-                    tool_failures[call.name] = tool_failures.get(call.name, 0) + 1
-                    if tool_failures[call.name] >= agent.limits.max_tool_failures:
-                        open_circuits.add(call.name)
-                        emit(
-                            "tool_circuit_opened",
-                            tool=call.name,
-                            failures=tool_failures[call.name],
-                        )
-                else:
-                    tool_failures[call.name] = 0
-            tool_count += 1
-            consecutive_errors = consecutive_errors + 1 if outcome.status == "error" else 0
-            emit("tool_call_completed", **tool_result_data(call, outcome))
-            if consecutive_errors >= agent.limits.max_consecutive_tool_errors:
-                return finish(RunStatus.STOPPED, StopReason.MAX_TOOL_ERRORS)
-
-    return finish(RunStatus.STOPPED, StopReason.MAX_TURNS)
+    if isinstance(effect, ValidateTool):
+        return executor.validate(effect.call, effect.tool)
+    return executor.execute(effect.call, effect.tool, effect.context)
 
 
-__all__ = ["run"]
+async def _aperform(effect: Effect, caller: AsyncModelCaller, executor: ToolExecutor) -> Any:
+    """The same dispatch, awaiting whatever turns out to be awaitable.
+
+    Reusing `_perform` is deliberate: were the dispatch written twice, an
+    effect added to one and not the other would hang instead of failing.
+    """
+    outcome = _perform(effect, caller, executor)
+    return await outcome if inspect.isawaitable(outcome) else outcome
+
+
+__all__ = ["arun", "run"]
