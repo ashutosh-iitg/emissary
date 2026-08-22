@@ -1,6 +1,6 @@
 """Provider SDK translation adapters, and the table that selects between them.
 
-Three wire formats serving seven providers (ADR-0020). The registry replaces
+Three wire formats serving eight providers (ADR-0020). The registry replaces
 an `if provider.wire == "anthropic"` chain that grew a branch per wire; adding
 one is now a table entry, and `test_gemini_wire` asserts every provider names
 a wire that exists.

@@ -52,6 +52,19 @@ def _gemini(spec: Spec, setting: Thinking) -> dict[str, Any]:
     return {"thinking_config": {"include_thoughts": setting == "visible"}}
 
 
+def _openrouter(spec: Spec, setting: Thinking) -> dict[str, Any]:
+    """One `reasoning` object covers both switches OpenRouter exposes.
+
+    `exclude` is what separates `on` from `visible`: the model reasons either
+    way and is billed for the tokens either way, but excluded reasoning is not
+    returned — so `on` costs the same as `visible` and discloses nothing,
+    which is exactly the distinction the neutral setting draws.
+    """
+    if setting == "off":
+        return {"extra_body": {"reasoning": {"enabled": False}}}
+    return {"extra_body": {"reasoning": {"enabled": True, "exclude": setting == "on"}}}
+
+
 def _effort(spec: Spec, setting: Thinking) -> dict[str, Any]:
     """Models that always reason (Kimi K3), tuned by effort rather than toggled.
 
@@ -69,6 +82,7 @@ DIALECTS: dict[str, Callable[[Spec, Thinking], dict[str, Any]]] = {
     "deepseek": _deepseek,
     "effort": _effort,
     "gemini": _gemini,
+    "openrouter": _openrouter,
 }
 
 

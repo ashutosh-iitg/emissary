@@ -29,6 +29,12 @@ def test_a_provider_with_no_verified_default_must_be_given_a_model():
     assert parse_spec("openai:some-model").model == "some-model"
     assert parse_spec("vllm:my-local-model").model == "my-local-model"
 
+    # OpenRouter has no default for a different reason than OpenAI: it is a
+    # router with no model of its own, so any default would name someone
+    # else's model and go stale without OpenRouter changing anything.
+    with pytest.raises(ProviderError, match="name one as"):
+        parse_spec("openrouter")
+
 
 def test_an_unknown_provider_is_refused_with_the_list():
     with pytest.raises(ProviderError, match="kimi"):
@@ -50,7 +56,9 @@ def test_providers_outnumber_wires_by_more_than_two_to_one():
     assert len(PROVIDERS) >= 2 * len(wires) + 1
     assert PROVIDERS["anthropic"].wire == "anthropic"
     assert PROVIDERS["gemini"].wire == PROVIDERS["vertex"].wire == "gemini"
-    assert {PROVIDERS[name].wire for name in ("openai", "kimi", "deepseek", "vllm")} == {"openai"}
+    assert {
+        PROVIDERS[name].wire for name in ("openai", "kimi", "deepseek", "openrouter", "vllm")
+    } == {"openai"}
 
 
 def test_only_first_party_providers_claim_strict_function_calling():
@@ -63,6 +71,9 @@ def test_only_first_party_providers_claim_strict_function_calling():
     # Gemini is deliberately absent: `strict` is an OpenAI-wire function-calling
     # flag and means nothing on `generateContent`.
     assert not PROVIDERS["vllm"].strict
+    # OpenRouter forwards to whichever upstream the caller named, and does not
+    # report whether that one enforces the schema — so the flag is not claimed.
+    assert not PROVIDERS["openrouter"].strict
 
 
 def test_a_hosted_provider_needs_its_key_present(monkeypatch):
@@ -84,3 +95,35 @@ def test_vllm_base_url_is_read_from_env_at_call_time(monkeypatch):
 
     monkeypatch.setenv("VLLM_BASE_URL", "http://gpu-box:9000/v1")
     assert PROVIDERS["vllm"].resolved_base_url() == "http://gpu-box:9000/v1"
+
+
+def test_an_openrouter_model_id_keeps_the_colon_in_its_variant_suffix():
+    """`nvidia/nemotron-3-ultra-550b-a55b:free` is one model ID, not a model
+    and a suffix: OpenRouter names free and paid variants of the same model
+    that way. Splitting on the last colon — or on every colon — would send
+    `nvidia/nemotron-3-ultra-550b-a55b`, a different (paid) route, or nothing
+    that resolves at all."""
+    spec = parse_spec("openrouter:nvidia/nemotron-3-ultra-550b-a55b:free")
+
+    assert spec.name == "openrouter"
+    assert spec.model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def test_openrouter_is_a_hosted_provider_and_needs_its_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    spec = parse_spec("openrouter:nvidia/nemotron-3-ultra-550b-a55b:free")
+    assert key_present(spec) is False
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    assert key_present(spec) is True
+    assert PROVIDERS["openrouter"].resolved_base_url() == "https://openrouter.ai/api/v1"
+
+
+def test_openrouter_does_not_claim_logprobs_it_cannot_guarantee():
+    """`call_choice` renormalises a probability over the label set. A router
+    that returns them only when the upstream happens to would mean a caller
+    could threshold on a score for one model and get an error for the next —
+    so the capability is refused up front rather than sometimes honoured."""
+    assert PROVIDERS["openrouter"].capabilities.logprobs is False
+    assert PROVIDERS["openrouter"].capabilities.tool_calling is True
+    assert PROVIDERS["openrouter"].capabilities.thinking is True

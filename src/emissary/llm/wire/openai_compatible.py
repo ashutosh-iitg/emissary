@@ -1,5 +1,5 @@
 """The OpenAI-compatible chat-completions adapter — openai, kimi, deepseek,
-gemini, and vllm all speak this wire."""
+openrouter, and vllm all speak this wire."""
 
 import json
 import math
@@ -25,6 +25,36 @@ from .thinking import thinking_kwargs
 
 WIRE = "openai"
 """Tags reasoning state this wire issues, so no other wire replays it."""
+
+OPENROUTER_REASONING = "openrouter"
+"""A second tag for the one provider on this wire that round-trips something else.
+
+Kimi and DeepSeek both echo a `reasoning_content` string, so a state issued by
+one is replayable by the other. OpenRouter instead returns `reasoning_details`
+— a structured array its docs say to pass back unmodified — and sending that
+array to DeepSeek, or a bare string to OpenRouter, is precisely the cross-talk
+the wire tag exists to stop (ADR-0018). Same wire, different payload, so it
+needs its own tag rather than a shared one that happens to be true today.
+"""
+
+REASONING_TEXT_FIELDS = ("reasoning_content", "reasoning")
+"""Where a server puts the readable trace. DeepSeek and Kimi use the first,
+OpenRouter the second; both are vendor extensions this SDK passes through
+untyped, so they are read by name rather than off a schema."""
+
+
+def _reasoning_wire(spec: Spec) -> str:
+    return OPENROUTER_REASONING if spec.provider.thinking_dialect == "openrouter" else WIRE
+
+
+def _reasoning_text(source) -> str | None:
+    """The trace a message or delta carried, under whichever name it used."""
+    for field_name in REASONING_TEXT_FIELDS:
+        value = getattr(source, field_name, None)
+        if value:
+            return value
+    return None
+
 
 TOP_LOGPROBS = 20
 """How many alternatives to ask for at the scored position.
@@ -75,7 +105,10 @@ def _validate_labels(spec: Spec, labels: list[str]) -> None:
         units.add(unit)
 
 
-def _openai_messages(system: str, messages: tuple[Message, ...]) -> list[dict[str, Any]]:
+def _openai_messages(
+    spec: Spec, system: str, messages: tuple[Message, ...]
+) -> list[dict[str, Any]]:
+    expected_wire = _reasoning_wire(spec)
     translated: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for message in messages:
         if isinstance(message, UserMessage):
@@ -88,7 +121,7 @@ def _openai_messages(system: str, messages: tuple[Message, ...]) -> list[dict[st
             # is on and this is missing: "reasoning_content in thinking mode
             # must be passed back to the API". Rebuilding history without it is
             # the documented way OpenAI-compatible clients break on turn two.
-            if message.reasoning is not None and message.reasoning.wire == WIRE:
+            if message.reasoning is not None and message.reasoning.wire == expected_wire:
                 for block in message.reasoning.blocks:
                     item.update(block)
             if message.tool_calls:
@@ -195,7 +228,7 @@ def _request(
     ]
     kwargs: dict[str, Any] = {
         "model": spec.model,
-        "messages": _openai_messages(system, messages),
+        "messages": _openai_messages(spec, system, messages),
         provider.max_tokens_field: configured.max_output_tokens or MAX_TOKENS,
     }
     if request_tools:
@@ -215,7 +248,7 @@ async def _astream(spec: Spec, kwargs: dict[str, Any], sink: AsyncStreamSink):
             if event.type != "chunk" or not event.chunk.choices:
                 continue
             delta = event.chunk.choices[0].delta
-            fragment = getattr(delta, "reasoning_content", None)
+            fragment = _reasoning_text(delta)
             if fragment:
                 reasoning.append(fragment)
                 await sink.on_thinking(fragment)
@@ -227,7 +260,7 @@ async def _astream(spec: Spec, kwargs: dict[str, Any], sink: AsyncStreamSink):
 def _stream(spec: Spec, kwargs: dict[str, Any], sink: StreamSink):
     """Drain the stream, returning the accumulated completion and reasoning.
 
-    `reasoning_content` is a vendor extension, and the SDK accumulator promises
+    The reasoning field is a vendor extension, and the SDK accumulator promises
     nothing about fields outside its own schema. Losing it here would not fail
     here — it would 400 the *next* turn (ADR-0018), a long way from the cause —
     so this wire accumulates it rather than trusting the snapshot.
@@ -238,13 +271,29 @@ def _stream(spec: Spec, kwargs: dict[str, Any], sink: StreamSink):
             if event.type != "chunk" or not event.chunk.choices:
                 continue
             delta = event.chunk.choices[0].delta
-            fragment = getattr(delta, "reasoning_content", None)
+            fragment = _reasoning_text(delta)
             if fragment:
                 reasoning.append(fragment)
                 sink.on_thinking(fragment)
             if getattr(delta, "content", None):
                 sink.on_text(delta.content)
         return stream.get_final_completion(), "".join(reasoning) or None
+
+
+def _reasoning_state(spec: Spec, message, thinking: str | None) -> ReasoningState | None:
+    """The reasoning payload the *next* request to this provider must carry.
+
+    OpenRouter's `reasoning_details` is preferred over the text whenever it is
+    present: the array is what lets the model resume the reasoning it already
+    did, and reducing it to a string would send back something the provider
+    accepts and cannot use — the failure that leaves no error to notice.
+    """
+    details = getattr(message, "reasoning_details", None)
+    if details:
+        return ReasoningState(wire=_reasoning_wire(spec), blocks=({"reasoning_details": details},))
+    if thinking is None:
+        return None
+    return ReasoningState(wire=_reasoning_wire(spec), blocks=({"reasoning_content": thinking},))
 
 
 def _normalize(spec: Spec, response, streamed_reasoning: str | None = None) -> ModelResult:
@@ -271,12 +320,8 @@ def _normalize(spec: Spec, response, streamed_reasoning: str | None = None) -> M
 
     # Captured whether or not it was requested: a server that volunteered this
     # stated a fact, and the record keeps what arrived (ADR-0019).
-    thinking = streamed_reasoning or getattr(message, "reasoning_content", None) or None
-    reasoning = (
-        ReasoningState(wire=WIRE, blocks=({"reasoning_content": thinking},))
-        if thinking is not None
-        else None
-    )
+    thinking = streamed_reasoning or _reasoning_text(message)
+    reasoning = _reasoning_state(spec, message, thinking)
 
     usage = response.usage
     details = getattr(usage, "prompt_tokens_details", None)

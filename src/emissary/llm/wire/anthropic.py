@@ -119,8 +119,7 @@ async def acall_model(
     """`call_model` on the async client — same request, same normalisation.
 
     Holds no logic of its own on purpose: everything that could disagree with
-    the sync path lives in `_request` and `_normalize`, which both call
-    (ADR-0023).
+    the sync path lives in `_request` and `_normalize`, which both call.
     """
     import anthropic
 

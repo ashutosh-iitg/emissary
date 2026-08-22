@@ -252,3 +252,124 @@ def test_tool_turns_carry_reasoning_state_into_the_projected_message():
     assistant = messages[-1]
     assert isinstance(assistant, AssistantMessage)
     assert assistant.reasoning == reasoning
+
+
+OPENROUTER = "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def _openrouter_response(*, content, reasoning=None, reasoning_details=None):
+    """OpenRouter puts the trace in `reasoning` and the replayable payload in
+    `reasoning_details` — neither under the name DeepSeek and Kimi use."""
+    message = SimpleNamespace(content=content, tool_calls=None)
+    if reasoning is not None:
+        message.reasoning = reasoning
+    if reasoning_details is not None:
+        message.reasoning_details = reasoning_details
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        model="nvidia/nemotron-3-ultra-550b-a55b:free",
+        usage=SimpleNamespace(prompt_tokens=31, completion_tokens=73, prompt_tokens_details=None),
+    )
+
+
+DETAILS = [
+    {"type": "reasoning.text", "text": "The word is s-t-r-a-w-b-e-r-r-y.", "index": 0},
+]
+
+
+def test_openrouter_reasoning_is_read_from_its_own_field_names():
+    """Reading only `reasoning_content` would leave `thinking` empty for every
+    OpenRouter call — no error, just a reasoning model whose reasoning the
+    harness never records."""
+    client = MagicMock()
+    client.chat.completions.create.return_value = _openrouter_response(
+        content="three", reasoning="The word is s-t-r-a-w-b-e-r-r-y.", reasoning_details=DETAILS
+    )
+
+    with patch("openai.OpenAI", return_value=client):
+        result = openai_compatible.call_model(parse_spec(OPENROUTER), system="s", messages=MESSAGES)
+
+    assert result.thinking == "The word is s-t-r-a-w-b-e-r-r-y."
+    assert result.reasoning == ReasoningState(
+        wire="openrouter", blocks=({"reasoning_details": DETAILS},)
+    )
+
+
+def test_openrouter_replays_reasoning_details_unmodified():
+    """The array is what lets the model continue the reasoning it already did.
+    Flattening it to the trace text would be accepted by the API and quietly
+    restart the reasoning — a cost and quality regression with no error."""
+    prior = (
+        UserMessage((TextBlock("count them"),)),
+        AssistantMessage(
+            text="three",
+            reasoning=ReasoningState(wire="openrouter", blocks=({"reasoning_details": DETAILS},)),
+        ),
+    )
+    client = MagicMock()
+    client.chat.completions.create.return_value = _openrouter_response(content="still three")
+
+    with patch("openai.OpenAI", return_value=client) as ctor:
+        openai_compatible.call_model(parse_spec(OPENROUTER), system="s", messages=prior)
+        sent = ctor.return_value.chat.completions.create.call_args.kwargs["messages"]
+
+    assistant = next(message for message in sent if message["role"] == "assistant")
+    assert assistant["reasoning_details"] == DETAILS
+
+
+def test_reasoning_is_not_forwarded_between_providers_sharing_this_wire():
+    """Same wire, incompatible payloads: DeepSeek has no use for OpenRouter's
+    `reasoning_details` array, and OpenRouter cannot resume from DeepSeek's
+    `reasoning_content` string. A fallback between the two must drop it rather
+    than hand the second provider a field the first one's format."""
+    from_openrouter = AssistantMessage(
+        text="three",
+        reasoning=ReasoningState(wire="openrouter", blocks=({"reasoning_details": DETAILS},)),
+    )
+    from_deepseek = AssistantMessage(
+        text="three",
+        reasoning=ReasoningState(wire="openai", blocks=({"reasoning_content": "counting"},)),
+    )
+    client = MagicMock()
+    client.chat.completions.create.return_value = _openai_response(content="done")
+
+    for spec, message, leaked in (
+        ("deepseek", from_openrouter, "reasoning_details"),
+        (OPENROUTER, from_deepseek, "reasoning_content"),
+    ):
+        with patch("openai.OpenAI", return_value=client) as ctor:
+            openai_compatible.call_model(
+                parse_spec(spec),
+                system="s",
+                messages=(UserMessage((TextBlock("count them"),)), message),
+            )
+            sent = ctor.return_value.chat.completions.create.call_args.kwargs["messages"]
+
+        assistant = next(item for item in sent if item["role"] == "assistant")
+        assert leaked not in assistant
+
+
+@pytest.mark.parametrize(
+    ("setting", "expected"),
+    [
+        ("off", {"enabled": False}),
+        # `on` still reasons and is still billed; `exclude` only withholds the
+        # trace, which is the disclosure half of the neutral setting.
+        ("on", {"enabled": True, "exclude": True}),
+        ("visible", {"enabled": True, "exclude": False}),
+    ],
+)
+def test_openrouter_dialect_translates_every_thinking_setting(setting, expected):
+    client = MagicMock()
+    client.chat.completions.create.return_value = _openrouter_response(content="ok")
+
+    with patch("openai.OpenAI", return_value=client) as ctor:
+        openai_compatible.call_model(
+            parse_spec(OPENROUTER),
+            system="s",
+            messages=MESSAGES,
+            settings=ModelSettings(thinking=setting),
+        )
+        sent = ctor.return_value.chat.completions.create.call_args.kwargs
+
+    assert sent["extra_body"]["reasoning"] == expected
