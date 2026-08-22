@@ -11,10 +11,10 @@ import os
 from typing import Any
 
 from .calls import call_tool
-from .errors import ProviderError
 from .messages import TextBlock
 from .provider import Spec, parse_spec
 from .result import CallResult
+from .retry import call_with_fallback
 
 
 def resolve_spec(value: str | None = None, *, env_var: str, default: str) -> Spec:
@@ -32,27 +32,21 @@ def call_tool_with_fallback(
     tool: dict[str, Any],
     effort: str | None = None,
 ) -> CallResult:
-    """One attempt on `primary`, one attempt on `fallback` if `primary` fails
-    in a way `fallback` could plausibly answer.
+    """The retry ladder on `primary`, then one attempt on `fallback`.
 
-    Only `ProviderError.retryable` failures fall back — connection errors,
-    rate limits, overloads, refusals. A malformed payload or a missing
-    credential does not, and neither does anything downstream that raises a
-    non-retryable `ProviderError` before returning: retrying elsewhere would
-    be shopping for a provider whose answer happens to be usable, not
-    recovering from an outage.
+    `primary` is retried on the `RETRY_DELAYS` ladder; only then does a
+    different provider get asked, once. Both the retries and the switch are
+    logged at WARNING — a fallback nobody noticed is a caller reading an answer
+    from a model it did not choose.
 
-    One attempt on the fallback, not a chain — a second failure is a
-    condition the caller should see, not another silent retry.
+    Only `ProviderError.retryable` failures retry or fall back — connection
+    errors, rate limits, overloads, refusals. A malformed payload or a missing
+    credential does neither: the model answered, just unusably, and asking
+    again or asking elsewhere would be shopping for a parseable answer rather
+    than recovering from an outage.
     """
-    try:
-        return call_tool(primary, system=system, blocks=blocks, tool=tool, effort=effort)
-    except ProviderError as first:
-        if not first.retryable or fallback is None or fallback.name == primary.name:
-            raise
-        try:
-            return call_tool(fallback, system=system, blocks=blocks, tool=tool, effort=effort)
-        except ProviderError as second:
-            # Both named, because "the fallback failed" without saying what
-            # the primary did sends an operator to the wrong status page.
-            raise ProviderError(f"{first}; fallback {second}") from second
+    return call_with_fallback(
+        primary,
+        fallback,
+        lambda spec: call_tool(spec, system=system, blocks=blocks, tool=tool, effort=effort),
+    )

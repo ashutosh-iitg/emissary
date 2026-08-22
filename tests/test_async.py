@@ -3,7 +3,7 @@
 The property that matters is equality: given the same recorded response, the
 sync and async paths must produce the same `ModelResult`. They share
 `_request` and `_normalize` precisely so they cannot drift, and these tests are
-what would catch it if someone re-implemented either (ADR-0023).
+what would catch it if someone re-implemented either.
 """
 
 import json
@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from emissary import ProviderError, parse_spec
+from emissary.llm import retry
 from emissary.llm.decision import FinalOutput, ToolCalls, ToolDefinition
 from emissary.llm.messages import TextBlock, UserMessage
 from emissary.llm.model import AsyncFallbackModelCaller, AsyncSpecModelCaller, acall_model
@@ -350,6 +351,7 @@ async def test_async_spec_caller_satisfies_the_async_caller_protocol(monkeypatch
 
 
 async def test_async_fallback_retries_only_availability_failures(monkeypatch):
+    monkeypatch.setattr(retry, "RETRY_DELAYS", ())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     monkeypatch.setenv("MOONSHOT_API_KEY", "test")
     caller = AsyncFallbackModelCaller(parse_spec("anthropic"), parse_spec("kimi"))
@@ -371,6 +373,29 @@ async def test_async_fallback_retries_only_availability_failures(monkeypatch):
     ):
         await caller(system="s", messages=MESSAGES)
     assert called.await_count == 1
+
+
+async def test_async_streaming_failure_after_a_delta_is_not_retried(monkeypatch, caplog):
+    monkeypatch.setattr(retry, "RETRY_DELAYS", ())
+    caller = AsyncFallbackModelCaller(parse_spec("anthropic"), parse_spec("kimi"))
+    sink = AsyncRecorder()
+
+    async def partial_failure(*args, **kwargs):
+        await kwargs["sink"].on_text("partial")
+        raise ProviderError("stream disconnected", retryable=True)
+
+    with (
+        patch(
+            "emissary.llm.model.acall_model", new=AsyncMock(side_effect=partial_failure)
+        ) as called,
+        caplog.at_level("WARNING", logger="emissary.llm.model"),
+        pytest.raises(ProviderError, match="after streaming output"),
+    ):
+        await caller(system="s", messages=MESSAGES, sink=sink)
+
+    assert called.await_count == 1
+    assert sink.text == ["partial"]
+    assert "retry suppressed" in caplog.text
 
 
 async def test_acall_tool_returns_the_same_payload_as_the_sync_call(monkeypatch):

@@ -40,7 +40,7 @@ class AsyncStreamSink(Protocol):
     A separate protocol rather than a reused one: the reason to stream from
     async code is usually to forward deltas somewhere that must be awaited — a
     websocket, a queue — and a sync-only sink would force the caller to buffer
-    or to spawn tasks that reorder the output (ADR-0023).
+    or to spawn tasks that reorder the output.
 
     Exceptions propagate here too, for the reason given on `StreamSink`.
     """
@@ -54,4 +54,47 @@ class AsyncStreamSink(Protocol):
         ...
 
 
-__all__ = ["AsyncStreamSink", "StreamSink"]
+class TrackingStreamSink:
+    """Forwards deltas while remembering whether visible state escaped.
+
+    Retry orchestration needs exactly this fact. Before the first delta, a
+    disconnected stream is indistinguishable from any other failed request and
+    can safely be attempted again. Afterwards, retrying would append a second
+    answer to a sink that cannot retract the first one.
+    """
+
+    def __init__(self, sink: StreamSink):
+        self.sink = sink
+        self.emitted = False
+
+    def on_text(self, delta: str) -> None:
+        self.emitted = True
+        self.sink.on_text(delta)
+
+    def on_thinking(self, delta: str) -> None:
+        self.emitted = True
+        self.sink.on_thinking(delta)
+
+
+class AsyncTrackingStreamSink:
+    """The awaited twin of `TrackingStreamSink`."""
+
+    def __init__(self, sink: AsyncStreamSink):
+        self.sink = sink
+        self.emitted = False
+
+    async def on_text(self, delta: str) -> None:
+        self.emitted = True
+        await self.sink.on_text(delta)
+
+    async def on_thinking(self, delta: str) -> None:
+        self.emitted = True
+        await self.sink.on_thinking(delta)
+
+
+__all__ = [
+    "AsyncStreamSink",
+    "AsyncTrackingStreamSink",
+    "StreamSink",
+    "TrackingStreamSink",
+]

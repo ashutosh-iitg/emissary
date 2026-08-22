@@ -1,5 +1,6 @@
 """The sole provider-neutral model-call boundary used by agent runtimes."""
 
+import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Protocol
@@ -8,8 +9,16 @@ from .decision import ModelResult, ModelSettings, ToolDefinition
 from .errors import CapabilityError, ProviderError
 from .messages import Message
 from .provider import Spec, key_present
-from .streaming import AsyncStreamSink, StreamSink
+from .retry import acall_with_fallback, call_with_fallback
+from .streaming import (
+    AsyncStreamSink,
+    AsyncTrackingStreamSink,
+    StreamSink,
+    TrackingStreamSink,
+)
 from .wire import WIRES
+
+logger = logging.getLogger(__name__)
 
 
 class ModelCaller(Protocol):
@@ -142,46 +151,45 @@ class FallbackModelCaller:
         settings: ModelSettings | None = None,
         sink: StreamSink | None = None,
     ) -> ModelResult:
-        try:
-            return call_model(
-                self.primary,
-                system=system,
-                messages=messages,
-                tools=tools,
-                settings=settings,
-                sink=sink,
-            )
-        except ProviderError as first:
-            if (
-                not first.retryable
-                or self.fallback is None
-                or self.fallback.name == self.primary.name
-            ):
-                raise
+        tracked = TrackingStreamSink(sink) if sink is not None else None
+
+        def attempt(spec: Spec) -> ModelResult:
             try:
-                # The sink may already have seen a partial answer from the
-                # primary. That is the caller's to reconcile: emissary cannot
-                # unsay deltas, and hiding the second attempt's stream would be
-                # worse than a visible restart.
                 return call_model(
-                    self.fallback,
+                    spec,
                     system=system,
                     messages=messages,
                     tools=tools,
                     settings=settings,
-                    sink=sink,
+                    sink=tracked,
                 )
-            except ProviderError as second:
-                raise ProviderError(f"{first}; fallback {second}") from second
+            except ProviderError as failure:
+                if tracked is None or not tracked.emitted or not failure.retryable:
+                    raise
+                logger.warning(
+                    "%s: stream failed after output reached the sink; retry suppressed to "
+                    "prevent a second answer being appended to the same turn — %s",
+                    spec,
+                    failure,
+                )
+                raise ProviderError(
+                    f"{spec}: failed after streaming output; retry suppressed ({failure})"
+                ) from failure
+
+        return call_with_fallback(
+            self.primary,
+            self.fallback,
+            attempt,
+        )
 
 
 @dataclass(frozen=True)
 class AsyncFallbackModelCaller:
     """The async twin of `FallbackModelCaller`.
 
-    The policy is duplicated rather than shared: bridging four lines of
-    `retryable` branching across the sync/async divide costs more indirection
-    than it saves (ADR-0023). A change to one belongs in the other.
+    Both defer to `retry.py`: a timed ladder and its warnings are substantial
+    policy, and duplicating them across sync, async, and tool-forced calls would
+    let the three paths drift.
     """
 
     primary: Spec
@@ -196,33 +204,36 @@ class AsyncFallbackModelCaller:
         settings: ModelSettings | None = None,
         sink: AsyncStreamSink | None = None,
     ) -> ModelResult:
-        try:
-            return await acall_model(
-                self.primary,
-                system=system,
-                messages=messages,
-                tools=tools,
-                settings=settings,
-                sink=sink,
-            )
-        except ProviderError as first:
-            if (
-                not first.retryable
-                or self.fallback is None
-                or self.fallback.name == self.primary.name
-            ):
-                raise
+        tracked = AsyncTrackingStreamSink(sink) if sink is not None else None
+
+        async def attempt(spec: Spec) -> ModelResult:
             try:
                 return await acall_model(
-                    self.fallback,
+                    spec,
                     system=system,
                     messages=messages,
                     tools=tools,
                     settings=settings,
-                    sink=sink,
+                    sink=tracked,
                 )
-            except ProviderError as second:
-                raise ProviderError(f"{first}; fallback {second}") from second
+            except ProviderError as failure:
+                if tracked is None or not tracked.emitted or not failure.retryable:
+                    raise
+                logger.warning(
+                    "%s: stream failed after output reached the sink; retry suppressed to "
+                    "prevent a second answer being appended to the same turn — %s",
+                    spec,
+                    failure,
+                )
+                raise ProviderError(
+                    f"{spec}: failed after streaming output; retry suppressed ({failure})"
+                ) from failure
+
+        return await acall_with_fallback(
+            self.primary,
+            self.fallback,
+            attempt,
+        )
 
 
 __all__ = [

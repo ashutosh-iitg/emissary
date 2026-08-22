@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from emissary import CallResult, ProviderError, parse_spec, resolve_spec
+from emissary.llm import retry
 from emissary.llm.selection import call_tool_with_fallback
 
 PAYLOAD = {"title": "A law"}
@@ -47,6 +48,7 @@ class TestResolveSpec:
         )
 
 
+@pytest.mark.usefixtures("no_retry_ladder")
 class TestFallback:
     def test_an_availability_failure_reaches_the_fallback(self):
         outcomes = [ProviderError("overloaded", retryable=True), result("kimi", "kimi-k3")]
@@ -132,3 +134,9 @@ class TestFallback:
 
         assert called.call_count == 1
         assert answered.payload == PAYLOAD
+
+
+@pytest.fixture
+def no_retry_ladder(monkeypatch):
+    """These tests isolate fallback routing; `test_retry.py` owns the ladder."""
+    monkeypatch.setattr(retry, "RETRY_DELAYS", ())

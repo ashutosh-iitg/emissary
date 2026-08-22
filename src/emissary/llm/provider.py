@@ -1,11 +1,11 @@
 """The provider registry — every backend this package knows how to reach, and how.
 
-Seven providers, **three wire formats**. Claude speaks the Anthropic Messages
-API; Gemini and Vertex speak `generateContent`; OpenAI, Kimi, DeepSeek, and a
-locally-hosted vLLM server all speak OpenAI-compatible chat completions. So
-this is three adapters and a table, not seven integrations — and a provider
-only earns its own adapter when the compatibility layer loses a capability the
-harness needs (ADR-0020).
+Eight providers, **three wire formats**. Claude speaks the Anthropic Messages
+API; Gemini and Vertex speak `generateContent`; OpenAI, Kimi, DeepSeek,
+OpenRouter, and a locally-hosted vLLM server all speak OpenAI-compatible chat
+completions. So this is three adapters and a table, not eight integrations —
+and a provider only earns its own adapter when the compatibility layer loses a
+capability the harness needs (ADR-0020).
 
 Base URLs and key variables for the hosted providers were verified against
 each provider's own documentation. Model IDs move faster than endpoints;
@@ -106,6 +106,28 @@ PROVIDERS: dict[str, Provider] = {
         capabilities=ModelCapabilities(
             tool_calling=True, parallel_tool_calls=True, logprobs=True, thinking=True
         ),
+    ),
+    # An aggregator, not a vendor: one key reaches hundreds of upstream models,
+    # addressed as `vendor/model`. Verified OpenAI-compatible through the
+    # `openai` SDK — chat completions, forced and parallel tool calls, and
+    # streaming all behave as this wire already expects.
+    "openrouter": Provider(
+        wire="openai",
+        credential=ApiKey("OPENROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1",
+        # No default: there is no "OpenRouter model". The router only forwards
+        # what the caller names, and guessing an upstream ID would be exactly
+        # the plausible-looking-but-dead value this field refuses to ship.
+        default_model=None,
+        # `strict` is honoured by some upstreams and not others, and the router
+        # does not say which. Unverifiable per call, so it is not claimed.
+        strict=False,
+        thinking_dialect="openrouter",
+        # No `logprobs`: the router returns them only when the upstream does,
+        # and the model verified here returns none. `call_choice` renormalises
+        # over a distribution, so a provider that may silently omit it cannot
+        # be scored — better refused up front than thresholded on a guess.
+        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, thinking=True),
     ),
     # Native `generateContent`, not the OpenAI-compatible shim: that layer
     # drops `thought_signature`, and Gemini 3+ rejects a multi-turn tool call

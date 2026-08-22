@@ -121,28 +121,33 @@ reads `os.environ` and nothing else.
 ## The shape
 
 ```
-provider.py    PROVIDERS registry, Provider, Spec, parse_spec, key_present
-errors.py      ProviderError (+ retryable_status — the shared retry policy)
-result.py      CallResult — payload plus provenance and token counts
-wire/
-  types.py     Block — the vocabulary both adapters speak
-  anthropic_wire.py   native Messages API
-  openai_wire.py      OpenAI-compatible chat completions
-calls.py       call_tool — dispatch by wire, after the credential gate
-selection.py   resolve_spec (env) + call_tool_with_fallback (orchestration)
+llm/
+  provider.py       provider registry, specs, and credential selection
+  model.py          conversational sync/async dispatch and caller shells
+  calls.py          tool-forced and scored calls
+  retry.py          retry ladder, warnings, and one-shot fallback policy
+  streaming.py      sync/async sink contracts and emission tracking
+  wire/
+    anthropic.py          native Messages API
+    gemini.py             native generateContent API
+    openai_compatible.py  OpenAI-compatible chat completions
+    thinking.py           provider-neutral reasoning controls
+harness/             bounded agent loop, effects, tools, and event projection
+eval/                recorded evaluation and deterministic replay
+storage/             run persistence
 ```
 
-Data flow: caller builds a `Spec` → `calls.call_tool` gates on credentials and
-picks a wire → the adapter translates, calls, and normalises the answer into a
-`CallResult`. Everything above `calls.py` is provider-agnostic; everything
-inside `wire/` is provider-specific. Nothing else in the package knows an SDK
-exists.
+Data flow: caller builds a `Spec` → `model.call_model` or `calls.call_tool`
+gates credentials and capabilities → the selected wire translates, calls, and
+normalises the answer. Everything above `wire/` is provider-neutral; SDK
+request and response vocabulary stays inside the wire adapters.
 
 ## Decisions — do not re-open without new information
 
-**Two wire formats, not N integrations.** Anthropic speaks its own Messages
-API; OpenAI, Kimi, DeepSeek, Gemini, and vLLM all speak OpenAI-compatible chat
-completions. So this is two adapters and a table. That ratio is the whole
+**Three wire formats, not N integrations.** Anthropic speaks Messages; Gemini
+and Vertex speak native `generateContent`; OpenAI, Kimi, DeepSeek, OpenRouter,
+and vLLM speak OpenAI-compatible chat completions. So eight providers use
+three adapters and a table. That ratio is the whole
 justification for the package existing — if it ever becomes six real
 integrations, the abstraction has stopped paying for itself and should be
 reconsidered rather than extended.
@@ -153,13 +158,34 @@ typed answer. Adding it back requires an actual caller, not an anticipated one �
 its presence also forced `CallResult.payload` into a `dict | str` union that
 made every consumer's indexing unsound.
 
-**Fallback only on `retryable`.** Connection errors, rate limits, overloads,
-refusals retry on a second provider. A malformed payload or a missing credential
-does not. That distinction is the safety property this package exists to
-preserve: retrying until an answer parses is shopping for a provider whose
-output happens to be usable, which is exactly how a plausible-but-wrong result
-reaches a caller that trusts it. **One** fallback attempt, never a chain — a
-second failure is a condition an operator should see, not another silent retry.
+**Retry the chosen provider, then fall back once — `retryable` only.**
+Connection errors, rate limits, overloads and refusals climb a ladder on the
+provider the caller asked for (`llm/retry.py`; `RETRY_DELAYS` = 10s, 30s, 60s,
+four attempts in all), and only then does a *different* provider get asked,
+**once**. A malformed payload or a missing credential does neither. That
+distinction is the safety property this package exists to preserve: retrying
+until an answer parses is shopping for a provider whose output happens to be
+usable, which is exactly how a plausible-but-wrong result reaches a caller that
+trusts it.
+
+The delays are long on purpose — these failures clear in tens of seconds, and a
+millisecond-scale ladder would spend every attempt inside the same outage. The
+fallback gets no ladder of its own: the primary already spent the outage
+window, and two providers failing is a condition an operator must see now
+rather than after another two minutes of waiting.
+
+**Nothing degrades silently.** Every retry and every switch is logged at
+WARNING naming both specs, and the package installs no `NullHandler`, so an
+application that configures no logging still gets them on stderr via
+`logging.lastResort`. A fallback nobody noticed means a caller reading an
+answer from a model it never chose. The policy lives in one module because
+three copies of it would drift into three ideas of what an outage looks like.
+
+**Streaming retries only before the first delta.** Once text or reasoning has
+reached a sink, emissary cannot retract it. A failed streamed attempt therefore
+becomes non-retryable after its first emitted delta; this is logged at WARNING.
+Before any delta, the normal retry ladder still applies. This preserves actual
+streaming without ever stitching two attempts into one apparent answer.
 
 **No settings framework, ever.** `selection.resolve_spec` reads `os.environ`.
 Callers with their own config source (stria reads Django settings first) resolve

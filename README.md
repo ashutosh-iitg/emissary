@@ -76,6 +76,7 @@ Labels must differ in their **first token** — they're matched by prefix, so
 | `openai` | openai-compatible | `OPENAI_API_KEY` | no default model — name one |
 | `kimi` | openai-compatible | `MOONSHOT_API_KEY` | default model `kimi-k3` |
 | `deepseek` | openai-compatible | `DEEPSEEK_API_KEY` | default model `deepseek-v4-pro` |
+| `openrouter` | openai-compatible | `OPENROUTER_API_KEY` | no default model — name an upstream, e.g. `openrouter:nvidia/nemotron-3-ultra-550b-a55b:free` |
 | `gemini` | gemini | `GEMINI_API_KEY` | default model `gemini-3.6-flash` |
 | `vertex` | gemini | Google ADC + `GOOGLE_CLOUD_PROJECT` | `GOOGLE_CLOUD_LOCATION` (default `global`), no default model |
 | `vllm` | openai-compatible | `VLLM_API_KEY` (optional) | `VLLM_BASE_URL` (default `http://localhost:8000/v1`), no default model |
@@ -83,6 +84,15 @@ Labels must differ in their **first token** — they're matched by prefix, so
 `vllm` points at any OpenAI-compatible server vLLM exposes for a locally
 hosted, open-weight model — no credential required by default, since vLLM's
 server doesn't authenticate unless you put something in front of it.
+
+`openrouter` is a router rather than a vendor: one key reaches hundreds of
+upstream models, named `vendor/model` and optionally suffixed with a variant
+(`:free`). It has no default model because it has no model of its own. Its
+reasoning arrives as `reasoning_details`, which is round-tripped on the next
+turn so a reasoning model continues where it left off instead of starting
+over. `call_choice` is refused: logprobs come back only when the upstream
+happens to return them, and a score that is sometimes available is not one a
+threshold can be set against.
 
 The Gemini SDK is an **optional extra** — it pulls in sixteen transitive
 packages that an Anthropic-only or OpenAI-only caller never needs:
@@ -144,6 +154,13 @@ A sink is called synchronously inside the read loop, and an exception from it
 is **not** caught — a silently frozen display is harder to diagnose than a loud
 failure.
 
+`FallbackModelCaller` retries a streamed request only while no delta has
+reached the sink. Once text or reasoning is visible, a disconnect is raised
+and logged at `WARNING` instead of retrying: emissary cannot retract the
+partial answer, and appending another model attempt would present two answers
+as one. This keeps streaming live rather than buffering the whole turn merely
+to make retries transactional.
+
 ## Async
 
 Every call has an `a`-prefixed sibling — `acall_model`, `acall_tool`,
@@ -194,13 +211,21 @@ coroutine.
 spec = emissary.resolve_spec(cli_arg, env_var="MY_APP_LLM_PROVIDER", default="anthropic")
 ```
 
-`call_tool_with_fallback` makes one attempt on a
-primary `Spec`, then one attempt on a fallback `Spec` — but only if the
-primary failed in a way another provider could plausibly answer
-(`ProviderError.retryable`: connection errors, rate limits, overloads,
-refusals). A malformed payload or a missing credential never falls back —
-retrying elsewhere would be shopping for a provider whose answer happens to
-be usable, not recovering from an outage.
+`call_tool_with_fallback` retries the primary `Spec` on a ladder — **10s, 30s,
+60s, four attempts in all** — and only then makes a single attempt on the
+fallback `Spec`. Both the retries and the switch happen only if the failure is
+one another attempt could plausibly answer (`ProviderError.retryable`:
+connection errors, rate limits, overloads, refusals). A malformed payload or a
+missing credential does neither — retrying is shopping for an answer that
+happens to parse, not recovering from an outage.
+
+The delays are long because the failures they cover clear in tens of seconds;
+a millisecond ladder would spend every attempt inside the same outage. The
+fallback gets no ladder of its own: two providers failing is something an
+operator should hear about now, not after another two minutes.
+
+`FallbackModelCaller` and `AsyncFallbackModelCaller` apply the same policy to
+conversational calls — it lives once, in `llm/retry.py`.
 
 ```python
 result = emissary.call_tool_with_fallback(
@@ -209,6 +234,22 @@ result = emissary.call_tool_with_fallback(
     system=system, blocks=blocks, tool=tool,
 )
 ```
+
+### Nothing degrades silently
+
+Every retry and every fallback is logged at `WARNING` on the `emissary.llm.retry`
+logger, naming both specs:
+
+```
+anthropic:claude-opus-5: attempt 1 of 4 failed, retrying in 10s — 529 overloaded
+anthropic:claude-opus-5: exhausted 4 attempts over 100s, falling back to kimi:kimi-k3
+  — this answer comes from a different model than the one requested. Last failure: ...
+```
+
+The package deliberately installs **no** `NullHandler`, so an application that
+configures no logging still sees these on stderr. A fallback nobody noticed
+means a caller reading an answer from a model it never chose. A healthy call
+logs nothing.
 
 A caller with its own config source (a settings framework, a config file)
 resolves its own raw provider string and calls `parse_spec` directly, rather
