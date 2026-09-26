@@ -89,8 +89,22 @@ def test_llm_layer_does_not_depend_on_harness_evaluation_or_storage():
                     "harness",
                     "eval",
                     "storage",
+                    "memory",
                 }
             ):
                 violations.append(str(path.relative_to(PACKAGE)))
+
+    assert violations == []
+
+
+def test_harness_core_runs_without_memory():
+    """Memory builds on the loop, never the reverse: an agent with no memory must
+    not pay for it, and the loop must not grow opinions about what to remember."""
+    violations = []
+    for path in (PACKAGE / "harness").glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and "memory" in node.module:
+                violations.append(path.name)
 
     assert violations == []

@@ -135,6 +135,7 @@ llm/
 harness/             bounded agent loop, effects, tools, and event projection
 eval/                recorded evaluation and deterministic replay
 storage/             run persistence
+memory/              harness memory: store protocols, memory tools, recall, consolidation (ADR-0025)
 ```
 
 Data flow: caller builds a `Spec` → `model.call_model` or `calls.call_tool`

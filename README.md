@@ -322,6 +322,43 @@ marked `approval="always"` require an injected approver; without one the run
 pauses before the effect. Every model call, proposed action, tool outcome, and
 terminal transition is represented in the run's ordered event trajectory.
 
+## Memory
+
+Memory is a harness capability, and storage is yours (ADR-0025). Emissary defines the
+records, the store protocols, the tools and the rules. Your application implements
+`FactStore`, `EpisodeStore`, `ProcedureStore`, `Scratchpad` and any `VectorStore`, each
+already scoped to one user.
+
+```python
+import emissary
+from emissary import memory
+
+agent = emissary.Agent(
+    name="tutor",
+    instructions=GLOBAL_RULES,  # never rewritten at runtime
+    tools=(
+        memory.remember_fact_tool(facts),
+        memory.take_note_tool(scratchpad),
+        memory.recall_episodes_tool(episodes),
+        memory.vector_search_tool(stories, name="search_stories",
+                                  description="...", filters_schema={...}),
+    ),
+)
+recall = memory.load_recall(
+    facts=facts, episodes=episodes, procedures=procedures, scratchpad=scratchpad)
+agent = memory.with_memory(agent, recall)
+result = await emissary.arun(agent, utterance, caller=caller, history=earlier_turns)
+
+# After responding, off the hot path:
+outcome = await memory.aconsolidate(spec, transcript=result.messages, recall=recall)
+memory.apply_consolidation(outcome, facts=facts, episodes=episodes, procedures=procedures)
+```
+
+The model judges what was notable, and code decides what is stored:
+- An inferred fact needs an episode as evidence.
+- Nothing retracts what the user said.
+- A strategy is used only after several separate episodes support it.
+
 ## Package layout
 
 The root package re-exports the common API. Larger applications can import from
@@ -333,6 +370,7 @@ the responsibility-specific modules instead:
 | `emissary.harness` | Agent definitions, bounded execution, tools, policy, context, state, and events |
 | `emissary.eval` | Deterministic run and trajectory evaluation |
 | `emissary.storage` | Optional versioned run-record persistence |
+| `emissary.memory` | Working and long-term memory, vector search as a tool, consolidation |
 
 ## License
 
