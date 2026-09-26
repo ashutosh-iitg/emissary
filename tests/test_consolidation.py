@@ -61,6 +61,21 @@ def test_consolidate_sends_the_transcript_and_current_memory_to_the_model(model)
     assert known.id in sent
 
 
+def test_session_notes_reach_consolidation_as_unverified_hunches(model):
+    """A hunch noted mid-session is only judged if the judging step can see it."""
+    requests = model(payload())
+
+    consolidate(
+        parse_spec("anthropic"),
+        transcript=TRANSCRIPT,
+        recall=Recall(notes={"hunch": "confuses b and d"}),
+    )
+
+    sent = "\n".join(block.text for block in requests[0]["blocks"])
+    assert "# Session notes (unverified)" in sent
+    assert "hunch: confuses b and d" in sent
+
+
 def test_malformed_model_output_is_refused_before_anything_can_be_stored(model):
     model({"episode": "Something happened"})
 
