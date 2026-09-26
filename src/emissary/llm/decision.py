@@ -123,6 +123,14 @@ class ModelCapabilities:
     # Whether the provider accepts a thinking request at all. Which of the
     # explicit values it can express is the dialect's business (ADR-0019).
     thinking: bool = False
+    # Whether it holds a conversation at all. False for endpoints that serve one
+    # fixed task (embedding, OCR, typed decisions) behind a chat-shaped door.
+    chat: bool = True
+    embeddings: bool = False
+    ocr: bool = False
+    # Label probabilities the provider computes itself (Jev), rather than ones
+    # read off `logprobs`. Either one admits a provider to `call_choice`.
+    calibrated_choice: bool = False
 
 
 Thinking = Literal["default", "off", "on", "visible"]

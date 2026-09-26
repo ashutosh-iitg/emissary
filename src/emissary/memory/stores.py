@@ -62,9 +62,9 @@ class Match:
 
 
 class VectorStore(Protocol):
-    """Any vector database. Embedding the query is the store's concern: emissary
-    has no embedding call, and pinning one here would choose a model for every
-    application.
+    """Any vector database. Embedding the query is the store's concern: only the
+    application knows which model indexed it. A store may use `emissary.embed`
+    for that; the protocol takes text so emissary never picks the model (ADR-0026).
     """
 
     def search(

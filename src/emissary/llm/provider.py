@@ -1,11 +1,12 @@
 """The provider registry — every backend this package knows how to reach, and how.
 
-Eight providers, **three wire formats**. Claude speaks the Anthropic Messages
+Twelve providers, **four wire formats**. Claude speaks the Anthropic Messages
 API; Gemini and Vertex speak `generateContent`; OpenAI, Kimi, DeepSeek,
-OpenRouter, and a locally-hosted vLLM server all speak OpenAI-compatible chat
-completions. So this is three adapters and a table, not eight integrations —
-and a provider only earns its own adapter when the compatibility layer loses a
-capability the harness needs (ADR-0020).
+OpenRouter, a locally-hosted vLLM server, Jina, Voyage, and any self-hosted
+embeddings server all speak the OpenAI-compatible API; TypeSafe's Jev speaks its own
+decision endpoint. So this is four adapters and a table, not twelve
+integrations — and a provider only earns its own adapter when the compatibility
+layer loses a capability the harness needs (ADR-0020), or has none (ADR-0027).
 
 Base URLs and key variables for the hosted providers were verified against
 each provider's own documentation. Model IDs move faster than endpoints;
@@ -50,6 +51,10 @@ class Provider:
     # the provider's parameter could not be confirmed against its own docs —
     # same rule as `default_model`, for the same reason.
     thinking_dialect: str = "none"
+    # How the embeddings endpoint is told which side of a retrieval a text is on
+    # — Jina's `task`, Voyage's `input_type`, Gemini's `task_type` or prefixes.
+    # "none" where it cannot be told, so `input_type` is refused there (ADR-0026).
+    embedding_dialect: str = "none"
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
 
     @property
@@ -82,7 +87,11 @@ PROVIDERS: dict[str, Provider] = {
         strict=True,
         max_tokens_field="max_completion_tokens",
         capabilities=ModelCapabilities(
-            tool_calling=True, parallel_tool_calls=True, structured_output=True, logprobs=True
+            tool_calling=True,
+            parallel_tool_calls=True,
+            structured_output=True,
+            logprobs=True,
+            embeddings=True,
         ),
     ),
     "kimi": Provider(
@@ -137,7 +146,12 @@ PROVIDERS: dict[str, Provider] = {
         credential=ApiKey("GEMINI_API_KEY"),
         default_model="gemini-3.6-flash",
         thinking_dialect="gemini",
-        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, thinking=True),
+        # The default is a chat model: embedding needs one named, as in
+        # `gemini:gemini-embedding-2`.
+        embedding_dialect="gemini",
+        capabilities=ModelCapabilities(
+            tool_calling=True, parallel_tool_calls=True, thinking=True, embeddings=True
+        ),
     ),
     # The same wire and model family reached through GCP: ADC instead of a key,
     # project and region instead of a base URL. No default model — Vertex model
@@ -147,7 +161,10 @@ PROVIDERS: dict[str, Provider] = {
         credential=GoogleADC("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
         default_model=None,
         thinking_dialect="gemini",
-        capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, thinking=True),
+        embedding_dialect="gemini",
+        capabilities=ModelCapabilities(
+            tool_calling=True, parallel_tool_calls=True, thinking=True, embeddings=True
+        ),
     ),
     "vllm": Provider(
         wire="openai",
@@ -160,6 +177,48 @@ PROVIDERS: dict[str, Provider] = {
         default_model=None,
         guided_choice=True,
         capabilities=ModelCapabilities(tool_calling=True, parallel_tool_calls=True, logprobs=True),
+    ),
+    # Embeddings and OCR, not conversation (ADR-0026): the chat endpoint serves
+    # only `jina-ocr-v1` and takes no tools. No default model, because the one
+    # provider serves both tasks and a default fits only one of them.
+    "jina": Provider(
+        wire="openai",
+        credential=ApiKey("JINA_API_KEY"),
+        base_url="https://api.jina.ai/v1",
+        default_model=None,
+        max_tokens_field="max_completion_tokens",
+        embedding_dialect="jina",
+        capabilities=ModelCapabilities(chat=False, embeddings=True, ocr=True),
+    ),
+    # Anthropic publishes no embeddings API and points to Voyage for them.
+    # OpenAI-shaped, but takes `input_type` itself and rejects a "float"
+    # `encoding_format` (ADR-0026).
+    "voyage": Provider(
+        wire="openai",
+        credential=ApiKey("VOYAGE_API_KEY"),
+        base_url="https://api.voyageai.com/v1",
+        default_model=None,
+        embedding_dialect="voyage",
+        capabilities=ModelCapabilities(chat=False, embeddings=True),
+    ),
+    # Any self-deployed OpenAI-compatible `/v1/embeddings` server (vLLM, TEI,
+    # Infinity, Ollama). No fallback address: without one the SDK would default
+    # to api.openai.com and ship the documents to a vendor nobody chose.
+    "embeddings": Provider(
+        wire="openai",
+        credential=Unauthenticated("EMBEDDINGS_API_KEY"),
+        base_url_env="EMBEDDINGS_BASE_URL",
+        default_model=None,
+        capabilities=ModelCapabilities(chat=False, embeddings=True),
+    ),
+    # Jev answers typed questions with calibrated probabilities and nothing else,
+    # over its own endpoint (ADR-0027). `jev-latest` is TypeSafe's documented alias.
+    "typesafe": Provider(
+        wire="typesafe",
+        credential=ApiKey("TYPESAFE_API_KEY"),
+        base_url="https://api.typesafe.ai/v1",
+        default_model="jev-latest",
+        capabilities=ModelCapabilities(chat=False, calibrated_choice=True),
     ),
 }
 

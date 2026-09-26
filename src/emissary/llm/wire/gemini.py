@@ -29,6 +29,7 @@ from ..decision import (
 from ..errors import CapabilityError, ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
+from ..result import EmbeddingResult
 from ..streaming import AsyncStreamSink, StreamSink
 from .thinking import thinking_kwargs
 
@@ -371,3 +372,76 @@ def _normalize(spec: Spec, blocks, finish_reason, usage, model: str) -> ModelRes
 
 
 __all__ = ["WIRE", "call_model"]
+
+
+TASK_TYPES = {"query": "RETRIEVAL_QUERY", "document": "RETRIEVAL_DOCUMENT"}
+"""`task_type` values for the embedding models that accept the field."""
+
+PREFIXED_MODELS = ("gemini-embedding-2",)
+"""Models that refuse `task_type` and take the retrieval side as a text prefix
+instead — Google's documented replacement, not an approximation of it."""
+
+TASK_PREFIXES = {"query": "task: search result | query: ", "document": "title: none | text: "}
+
+
+def embed(spec: Spec, *, texts: tuple[str, ...], input_type: str | None) -> EmbeddingResult:
+    errors = _sdk().errors
+
+    try:
+        response = _client(spec).models.embed_content(**_embedding_request(spec, texts, input_type))
+    except errors.APIError as exc:
+        raise _api_error(spec, exc) from exc
+
+    return _normalize_embeddings(spec, response, len(texts))
+
+
+async def aembed(spec: Spec, *, texts: tuple[str, ...], input_type: str | None) -> EmbeddingResult:
+    errors = _sdk().errors
+
+    try:
+        response = await _client(spec).aio.models.embed_content(
+            **_embedding_request(spec, texts, input_type)
+        )
+    except errors.APIError as exc:
+        raise _api_error(spec, exc) from exc
+
+    return _normalize_embeddings(spec, response, len(texts))
+
+
+def _embedding_request(
+    spec: Spec, texts: tuple[str, ...], input_type: str | None
+) -> dict[str, Any]:
+    types = _sdk().types
+    prefixed = spec.model.startswith(PREFIXED_MODELS)
+    prefix = TASK_PREFIXES[input_type] if input_type and prefixed else ""
+    config = (
+        types.EmbedContentConfig(task_type=TASK_TYPES[input_type])
+        if input_type and not prefixed
+        else None
+    )
+    return {
+        "model": spec.model,
+        # One `Content` per text: given bare strings, gemini-embedding-2 fuses
+        # them into a single vector for the whole list.
+        "contents": [
+            types.Content(parts=[types.Part.from_text(text=f"{prefix}{text}")]) for text in texts
+        ],
+        "config": config,
+    }
+
+
+def _normalize_embeddings(spec: Spec, response, expected: int) -> EmbeddingResult:
+    embeddings = list(response.embeddings or [])
+    if len(embeddings) != expected:
+        # Not retryable: fewer vectors than texts means they were aggregated, and
+        # there is no way back to which document each one stands for.
+        raise ProviderError(f"{spec}: asked for {expected} embeddings, got {len(embeddings)}")
+    return EmbeddingResult(
+        vectors=tuple(tuple(float(value) for value in item.values) for item in embeddings),
+        provider=spec.name,
+        model=spec.model,
+        # Only Vertex reports per-input counts; the Developer API reports none.
+        input_tokens=sum(
+            item.statistics.token_count or 0 for item in embeddings if item.statistics
+        ),
+    )

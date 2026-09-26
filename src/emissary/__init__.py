@@ -14,7 +14,17 @@ from .harness.tools import (
     ToolRegistry,
     ToolResult,
 )
-from .llm.calls import acall_choice, acall_tool, call_choice, call_tool
+from .llm.calls import (
+    EmbeddingInput,
+    acall_choice,
+    acall_tool,
+    aembed,
+    aocr,
+    call_choice,
+    call_tool,
+    embed,
+    ocr,
+)
 from .llm.decision import (
     FinalOutput,
     ModelCapabilities,
@@ -41,7 +51,7 @@ from .llm.model import (
 )
 from .llm.prompt import Prompt
 from .llm.provider import PROVIDERS, Provider, Spec, key_present, parse_spec
-from .llm.result import CallResult, ChoiceResult
+from .llm.result import CallResult, ChoiceResult, EmbeddingResult, OcrResult
 from .llm.selection import call_tool_with_fallback, resolve_spec
 from .llm.streaming import AsyncStreamSink, StreamSink
 from .storage import RunStore, SQLiteRunStore, deserialize_run, serialize_run
@@ -62,6 +72,8 @@ __all__ = [
     "CompleteHistory",
     "ContextOp",
     "ContextPolicy",
+    "EmbeddingInput",
+    "EmbeddingResult",
     "EvaluationReport",
     "EvaluationScenario",
     "EventGrader",
@@ -75,6 +87,7 @@ __all__ = [
     "ModelCapabilities",
     "ModelResult",
     "ModelSettings",
+    "OcrResult",
     "Prompt",
     "Provider",
     "ProviderError",
@@ -106,6 +119,8 @@ __all__ = [
     "acall_choice",
     "acall_model",
     "acall_tool",
+    "aembed",
+    "aocr",
     "arun",
     "call_choice",
     "call_model",
@@ -113,8 +128,10 @@ __all__ = [
     "call_tool_with_fallback",
     "derive_messages",
     "deserialize_run",
+    "embed",
     "evaluate",
     "key_present",
+    "ocr",
     "parse_spec",
     "resolve_spec",
     "run",

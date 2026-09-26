@@ -41,3 +41,24 @@ class ChoiceResult:
     def probability(self, label: str) -> float:
         """The probability assigned to one label, 0.0 if it drew no mass."""
         return self.probabilities.get(label, 0.0)
+
+
+@dataclass(frozen=True)
+class EmbeddingResult:
+    """One vector per input text, in the caller's order."""
+
+    vectors: tuple[tuple[float, ...], ...]
+    provider: str
+    model: str
+    input_tokens: int
+
+
+@dataclass(frozen=True)
+class OcrResult:
+    """A page transcribed to Markdown — text, tables and reading order together."""
+
+    markdown: str
+    provider: str
+    model: str
+    input_tokens: int
+    output_tokens: int

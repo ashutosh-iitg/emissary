@@ -1,6 +1,16 @@
 """Provider-neutral LLM calls, contracts, selection, and adapters."""
 
-from .calls import acall_choice, acall_tool, call_choice, call_tool
+from .calls import (
+    EmbeddingInput,
+    acall_choice,
+    acall_tool,
+    aembed,
+    aocr,
+    call_choice,
+    call_tool,
+    embed,
+    ocr,
+)
 from .decision import (
     FinalOutput,
     ModelCapabilities,
@@ -27,7 +37,7 @@ from .model import (
 )
 from .prompt import Prompt
 from .provider import PROVIDERS, Provider, Spec, key_present, parse_spec
-from .result import CallResult, ChoiceResult
+from .result import CallResult, ChoiceResult, EmbeddingResult, OcrResult
 from .selection import call_tool_with_fallback, resolve_spec
 from .streaming import AsyncStreamSink, StreamSink
 
@@ -41,6 +51,8 @@ __all__ = [
     "CallResult",
     "CapabilityError",
     "ChoiceResult",
+    "EmbeddingInput",
+    "EmbeddingResult",
     "FallbackModelCaller",
     "FinalOutput",
     "Message",
@@ -48,6 +60,7 @@ __all__ = [
     "ModelCapabilities",
     "ModelResult",
     "ModelSettings",
+    "OcrResult",
     "Prompt",
     "Provider",
     "ProviderError",
@@ -66,11 +79,15 @@ __all__ = [
     "acall_choice",
     "acall_model",
     "acall_tool",
+    "aembed",
+    "aocr",
     "call_choice",
     "call_model",
     "call_tool",
     "call_tool_with_fallback",
+    "embed",
     "key_present",
+    "ocr",
     "parse_spec",
     "resolve_spec",
 ]

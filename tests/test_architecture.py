@@ -3,8 +3,9 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).parents[1] / "src" / "emissary"
 
-PROVIDER_SDKS = {"anthropic", "openai", "google"}
-"""Every vendor package the wire layer may touch.
+PROVIDER_SDKS = {"anthropic", "openai", "google", "httpx"}
+"""Every vendor package the wire layer may touch — and `httpx`, which the
+typesafe wire speaks directly for want of a vendor SDK.
 
 Listed as a set so that admitting a wire forces this to be updated; before
 Gemini landed this check named only two SDKs, and `google.genai` could have
