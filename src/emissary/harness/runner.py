@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from ..llm.errors import ProviderError
+from ..llm.messages import Message
 from ..llm.model import AsyncModelCaller, ModelCaller
 from .agent import Agent
 from .context import ContextPolicy
@@ -31,6 +32,7 @@ def run(
     event_sink: EventSink | None = None,
     context_policy: ContextPolicy | None = None,
     approver: Approver | None = None,
+    history: tuple[Message, ...] = (),
 ) -> RunResult:
     """Run one agent until a typed terminal outcome is reached."""
     machine = agent_machine(
@@ -40,6 +42,7 @@ def run(
         event_sink=event_sink,
         context_policy=context_policy,
         approver=approver,
+        history=history,
     )
     active = executor or LocalToolExecutor()
     outcome: Any = None
@@ -68,6 +71,7 @@ async def arun(
     event_sink: EventSink | None = None,
     context_policy: ContextPolicy | None = None,
     approver: Approver | None = None,
+    history: tuple[Message, ...] = (),
 ) -> RunResult:
     """`run` on an event loop — the same machine, awaiting each effect.
 
@@ -82,6 +86,7 @@ async def arun(
         event_sink=event_sink,
         context_policy=context_policy,
         approver=approver,
+        history=history,
     )
     active = executor or LocalToolExecutor()
     outcome: Any = None

@@ -19,7 +19,7 @@ from typing import Any
 
 from ..llm.decision import FinalOutput, Refusal, ToolCalls, Usage
 from ..llm.errors import ProviderError
-from ..llm.messages import TextBlock, UserMessage
+from ..llm.messages import Message, TextBlock, UserMessage
 from .agent import Agent
 from .context import CompleteHistory, ContextPolicy
 from .effects import CallModel, Effect, ExecuteTool, ValidateTool
@@ -28,9 +28,11 @@ from .policy import ApprovalDecision, Approver, approval_for
 from .projection import (
     context_op_data,
     derive_messages,
+    message_to_data,
     model_result_data,
     tool_result_data,
     user_message_data,
+    validate_history,
 )
 from .state import RunResult, RunStatus, StopReason
 from .tools import ToolContext, ToolRegistry, ToolResult
@@ -44,6 +46,7 @@ def agent_machine(
     event_sink: EventSink | None = None,
     context_policy: ContextPolicy | None = None,
     approver: Approver | None = None,
+    history: tuple[Message, ...] = (),
 ) -> Generator[Effect, Any, RunResult]:
     """Drive one agent to a typed terminal outcome, yielding work to be done.
 
@@ -53,6 +56,8 @@ def agent_machine(
     """
     if not task:
         raise ValueError("task must not be empty")
+    if history:
+        validate_history(history)
 
     sink = event_sink or InMemoryEventSink()
     context = context_policy or CompleteHistory()
@@ -77,6 +82,8 @@ def agent_machine(
         return RunResult(run_id, status, reason, output, usage, tuple(events))
 
     emit("run_started", agent=agent.name)
+    if history:
+        emit("history_loaded", messages=[message_to_data(message) for message in history])
     emit("user_message", **user_message_data(UserMessage((TextBlock(task),))))
 
     for turn in range(agent.limits.max_turns):

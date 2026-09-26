@@ -229,6 +229,28 @@ def _reject_orphans(surface: list[Message]) -> None:
             raise ValueError(f"context op orphaned tool result {message.call_id!r} from its call")
 
 
+def validate_history(history: tuple[Message, ...]) -> None:
+    """A seeded conversation must be one a provider accepts as a prefix.
+
+    It opens with the user and closes on a plain assistant reply: a trailing tool
+    call would leave the new task answering a question the model never got back.
+    """
+    first, last = history[0], history[-1]
+    opens_with_user = isinstance(first, UserMessage)
+    closes_on_reply = isinstance(last, AssistantMessage) and not last.tool_calls
+    if not opens_with_user:
+        raise ValueError("history must open with a user message")
+    if not closes_on_reply:
+        raise ValueError("history must end on a complete exchange: a plain assistant reply")
+    _reject_orphans(list(history))
+    answered = {m.call_id for m in history if isinstance(m, ToolMessage)}
+    for message in history:
+        if isinstance(message, AssistantMessage):
+            for call in message.tool_calls:
+                if call.id not in answered:
+                    raise ValueError(f"history has tool call {call.id!r} that was never answered")
+
+
 def _apply_op(surface: list[Message], data: dict[str, Any]) -> list[Message]:
     start, end = data["start"], data["end"]
     if not 0 <= start <= end <= len(surface):
@@ -250,7 +272,9 @@ def derive_messages(events: Iterable[RunEvent], *, apply_ops: bool = True) -> tu
     """
     surface: list[Message] = []
     for event in events:
-        if event.kind == "user_message":
+        if event.kind == "history_loaded":
+            surface.extend(message_from_data(message) for message in event.data["messages"])
+        elif event.kind == "user_message":
             surface.append(_user_message(event.data))
         elif event.kind == "model_call_completed":
             message = _assistant_message(event.data)
@@ -274,4 +298,5 @@ __all__ = [
     "tool_result_data",
     "tool_result_from_data",
     "user_message_data",
+    "validate_history",
 ]
