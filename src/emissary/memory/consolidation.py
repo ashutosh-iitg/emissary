@@ -82,6 +82,9 @@ still true.
 - `strategies`: ways of acting that demonstrably helped this user. Reuse the name of \
 a listed strategy when it is the same approach.
 
+Session notes are the assistant's own working hunches. Treat them as questions \
+for the conversation to answer, never as evidence by themselves.
+
 Call `record_consolidation` exactly once."""
 
 
@@ -179,12 +182,14 @@ def _support_strategies(
 
 def _blocks(transcript: tuple[Message, ...], recall: Recall) -> tuple[TextBlock, ...]:
     facts = [f"- [{f.id}] ({f.source}) {f.text}" for f in recall.facts]
+    notes = [f"- {key}: {value}" for key, value in recall.notes.items()]
     strategies = [
         f"- {p.name}: {p.text} ({'active' if p.active else 'candidate'})" for p in recall.procedures
     ]
     return (
         TextBlock("# Known facts\n" + ("\n".join(facts) or "(none)")),
         TextBlock("# Known strategies\n" + ("\n".join(strategies) or "(none)")),
+        TextBlock("# Session notes (unverified)\n" + ("\n".join(notes) or "(none)")),
         TextBlock("# Conversation\n" + "\n".join(_render(m) for m in transcript)),
     )
 
