@@ -55,6 +55,8 @@ def _gate(spec: Spec, tools, settings) -> None:
         raise ProviderError(
             f"{spec.provider.credential.describe()} is not configured for provider {spec.name!r}"
         )
+    if not spec.provider.capabilities.chat:
+        raise CapabilityError(f"{spec}: this provider does not hold a conversation")
     if tools and not spec.provider.capabilities.tool_calling:
         raise CapabilityError(f"{spec}: this provider does not support tool calling")
     if (

@@ -1,5 +1,6 @@
-"""The OpenAI-compatible chat-completions adapter — openai, kimi, deepseek,
-openrouter, and vllm all speak this wire."""
+"""The OpenAI-compatible adapter — openai, kimi, deepseek, openrouter, and vllm
+speak its chat completions; openai, jina, voyage and self-hosted servers its
+embeddings, and jina its OCR."""
 
 import json
 import math
@@ -19,7 +20,7 @@ from ..decision import (
 from ..errors import ProviderError, retryable_status
 from ..messages import AssistantMessage, Message, TextBlock, ToolMessage, UserMessage
 from ..provider import MAX_TOKENS, Spec
-from ..result import CallResult, ChoiceResult
+from ..result import CallResult, ChoiceResult, EmbeddingResult, OcrResult
 from ..streaming import AsyncStreamSink, StreamSink
 from .thinking import thinking_kwargs
 
@@ -554,3 +555,136 @@ def _label_probabilities(spec: Spec, position, labels: list[str]) -> dict[str, f
             "the model answered something else entirely"
         )
     return {label: value / total for label, value in mass.items()}
+
+
+JINA_TASKS = {"query": "retrieval.query", "document": "retrieval.passage"}
+"""Jina's names for the two sides of a retrieval. Voyage takes `query` and
+`document` as they are."""
+
+
+def embed(spec: Spec, *, texts: tuple[str, ...], input_type: str | None) -> EmbeddingResult:
+    import openai
+
+    try:
+        response = _client(spec).embeddings.create(**_embedding_request(spec, texts, input_type))
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize_embeddings(spec, response, len(texts))
+
+
+async def aembed(spec: Spec, *, texts: tuple[str, ...], input_type: str | None) -> EmbeddingResult:
+    import openai
+
+    try:
+        response = await _client(spec, is_async=True).embeddings.create(
+            **_embedding_request(spec, texts, input_type)
+        )
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize_embeddings(spec, response, len(texts))
+
+
+def _embedding_request(
+    spec: Spec, texts: tuple[str, ...], input_type: str | None
+) -> dict[str, Any]:
+    dialect = spec.provider.embedding_dialect
+    request: dict[str, Any] = {"model": spec.model, "input": list(texts)}
+    if dialect == "voyage":
+        # Voyage takes only null or "base64"; null returns floats, and a value
+        # given explicitly stops the SDK decoding the answer as base64.
+        request["encoding_format"] = None
+        if input_type:
+            request["extra_body"] = {"input_type": input_type}
+        return request
+    # Explicit elsewhere, because the SDK otherwise asks for base64 and decodes it
+    # itself — a parameter Jina names `embedding_type`, so the default would rest
+    # on the server ignoring a field it does not know.
+    request["encoding_format"] = "float"
+    if input_type and dialect == "jina":
+        request["extra_body"] = {"task": JINA_TASKS[input_type]}
+    return request
+
+
+def _normalize_embeddings(spec: Spec, response, expected: int) -> EmbeddingResult:
+    data = sorted(response.data or [], key=lambda item: item.index)
+    if [item.index for item in data] != list(range(expected)):
+        # Not retryable: the vectors cannot be matched back to their texts, and
+        # guessing the alignment would index one document under another's vector.
+        raise ProviderError(
+            f"{spec}: asked for {expected} embeddings, got indices {[i.index for i in data]}"
+        )
+    return EmbeddingResult(
+        vectors=tuple(tuple(float(value) for value in item.embedding) for item in data),
+        provider=spec.name,
+        model=response.model or spec.model,
+        # Voyage reports only `total_tokens`; for an embedding the two are equal.
+        input_tokens=getattr(response.usage, "prompt_tokens", None)
+        or getattr(response.usage, "total_tokens", 0)
+        or 0,
+    )
+
+
+def ocr(spec: Spec, *, image_url: str) -> OcrResult:
+    import openai
+
+    try:
+        response = _client(spec).chat.completions.create(**_ocr_request(spec, image_url))
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize_ocr(spec, response)
+
+
+async def aocr(spec: Spec, *, image_url: str) -> OcrResult:
+    import openai
+
+    try:
+        response = await _client(spec, is_async=True).chat.completions.create(
+            **_ocr_request(spec, image_url)
+        )
+    except openai.APIStatusError as exc:
+        raise _status_error(spec, exc) from exc
+    except openai.APIConnectionError as exc:
+        raise ProviderError(f"{spec}: could not reach the API ({exc})", retryable=True) from exc
+
+    return _normalize_ocr(spec, response)
+
+
+def _ocr_request(spec: Spec, image_url: str) -> dict[str, Any]:
+    # The image alone: an OCR model has one task, and an instruction beside it
+    # is a second prompt to keep in step with the model's own training.
+    return {
+        "model": spec.model,
+        "messages": [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_url}}]}
+        ],
+        spec.provider.max_tokens_field: MAX_TOKENS,
+    }
+
+
+def _normalize_ocr(spec: Spec, response) -> OcrResult:
+    if not response.choices:
+        raise ProviderError(f"{spec}: no completion choice returned")
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        # A page cut off at the limit reads as a whole page; nothing downstream
+        # could tell that the rest of the document is missing.
+        raise ProviderError(f"{spec}: transcription truncated at {MAX_TOKENS} tokens")
+    markdown = choice.message.content
+    if not markdown:
+        raise ProviderError(f"{spec}: the model returned no text for this page")
+    return OcrResult(
+        markdown=markdown,
+        provider=spec.name,
+        model=response.model or spec.model,
+        input_tokens=getattr(response.usage, "prompt_tokens", 0) or 0,
+        output_tokens=getattr(response.usage, "completion_tokens", 0) or 0,
+    )

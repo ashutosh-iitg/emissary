@@ -1,10 +1,11 @@
 # emissary
 
-A small, provider-agnostic wrapper over LLM APIs. One call shape, three wire
-formats: the native Anthropic Messages API, Gemini's `generateContent`, and
-OpenAI-compatible chat completions — which covers OpenAI, Kimi, DeepSeek, and
-a locally hosted [vLLM](https://github.com/vllm-project/vllm) server. Three
-adapters and a table, not seven integrations.
+A small, provider-agnostic wrapper over LLM APIs. One call shape, four wire
+formats: the native Anthropic Messages API, Gemini's `generateContent`, the
+OpenAI-compatible API — which covers OpenAI, Kimi, DeepSeek, Jina, Voyage, and a
+locally hosted [vLLM](https://github.com/vllm-project/vllm) or embeddings
+server — and TypeSafe's Jev decision endpoint. Four adapters and a table, not
+twelve integrations.
 
 A provider only gets its own adapter when the compatibility layer loses
 something the caller needs. Gemini earned one because that layer drops
@@ -68,6 +69,47 @@ decoding to the label set; other providers get the same scoring without it.
 Labels must differ in their **first token** — they're matched by prefix, so
 `["SAFE", "FLAG"]` works and `["FLAG_A", "FLAG_B"]` does not.
 
+**Or Jev.** `typesafe` answers the same call from TypeSafe's calibrated decision
+model: the system text is the question, the blocks are the state, and whole
+labels are scored, so the first-token rule does not apply there.
+
+```python
+result = emissary.call_choice(
+    emissary.parse_spec("typesafe"),
+    system="Is this message safe for a young child?",
+    blocks=(emissary.TextBlock(message),),
+    labels=["SAFE", "FLAG"],
+)
+```
+
+## Embeddings and OCR
+
+```python
+vectors = emissary.embed(
+    emissary.parse_spec("jina:jina-embeddings-v5-text-small"),
+    ["what does a cat say?"],
+    input_type="query",           # or "document"; None sends no retrieval task
+).vectors                         # one tuple of floats per text, in order
+
+page = emissary.ocr(
+    emissary.parse_spec("jina:jina-ocr-v1"),
+    image_url="data:image/png;base64,...",   # or an http(s) URL
+).markdown
+```
+
+| provider | example spec | `input_type` sent as |
+|---|---|---|
+| `jina` | `jina:jina-embeddings-v5-text-small` | `task` (`retrieval.query` / `retrieval.passage`) |
+| `voyage` | `voyage:voyage-4` | `input_type` |
+| `gemini`, `vertex` | `gemini:gemini-embedding-2` | `task_type`; on `gemini-embedding-2`, Google's documented text prefix |
+| `openai` | `openai:text-embedding-3-small` | refused — symmetric model |
+| `embeddings` | `embeddings:bge-m3` | refused — the server's dialect is unknown |
+
+Anthropic has no embeddings API; it recommends Voyage, hence `voyage`.
+`input_type` is refused, not ignored, where a server cannot express it.
+Embeddings never fall back to another provider: vectors from two models do not
+share a space.
+
 ## Providers
 
 | name | wire | credential | notes |
@@ -80,6 +122,10 @@ Labels must differ in their **first token** — they're matched by prefix, so
 | `gemini` | gemini | `GEMINI_API_KEY` | default model `gemini-3.6-flash` |
 | `vertex` | gemini | Google ADC + `GOOGLE_CLOUD_PROJECT` | `GOOGLE_CLOUD_LOCATION` (default `global`), no default model |
 | `vllm` | openai-compatible | `VLLM_API_KEY` (optional) | `VLLM_BASE_URL` (default `http://localhost:8000/v1`), no default model |
+| `voyage` | openai-compatible | `VOYAGE_API_KEY` | embeddings only, no default model |
+| `jina` | openai-compatible | `JINA_API_KEY` | embeddings and OCR only — name the model, e.g. `jina:jina-embeddings-v5-text-small`, `jina:jina-ocr-v1` |
+| `embeddings` | openai-compatible | `EMBEDDINGS_API_KEY` (optional) | any self-hosted `/v1/embeddings` server; `EMBEDDINGS_BASE_URL` required, no default model |
+| `typesafe` | typesafe | `TYPESAFE_API_KEY` | `call_choice` only; default model `jev-latest` |
 
 `vllm` points at any OpenAI-compatible server vLLM exposes for a locally
 hosted, open-weight model — no credential required by default, since vLLM's

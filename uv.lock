@@ -374,6 +374,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "httpx" },
     { name = "jsonschema" },
     { name = "openai" },
 ]
@@ -396,6 +397,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.120.2" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=2.18.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jsonschema", specifier = ">=4.25.0" },
     { name = "openai", specifier = ">=2.53.0" },
 ]

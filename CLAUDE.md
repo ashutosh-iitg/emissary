@@ -124,13 +124,14 @@ reads `os.environ` and nothing else.
 llm/
   provider.py       provider registry, specs, and credential selection
   model.py          conversational sync/async dispatch and caller shells
-  calls.py          tool-forced and scored calls
+  calls.py          tool-forced, scored, embedding and OCR calls
   retry.py          retry ladder, warnings, and one-shot fallback policy
   streaming.py      sync/async sink contracts and emission tracking
   wire/
     anthropic.py          native Messages API
-    gemini.py             native generateContent API
-    openai_compatible.py  OpenAI-compatible chat completions
+    gemini.py             native generateContent and embedContent API
+    openai_compatible.py  OpenAI-compatible chat completions, embeddings, OCR
+    typesafe.py           TypeSafe's Jev decision endpoint (ADR-0027)
     thinking.py           provider-neutral reasoning controls
 harness/             bounded agent loop, effects, tools, and event projection
 eval/                recorded evaluation and deterministic replay
@@ -145,19 +146,25 @@ request and response vocabulary stays inside the wire adapters.
 
 ## Decisions — do not re-open without new information
 
-**Three wire formats, not N integrations.** Anthropic speaks Messages; Gemini
+**Four wire formats, not N integrations.** Anthropic speaks Messages; Gemini
 and Vertex speak native `generateContent`; OpenAI, Kimi, DeepSeek, OpenRouter,
-and vLLM speak OpenAI-compatible chat completions. So eight providers use
-three adapters and a table. That ratio is the whole
-justification for the package existing — if it ever becomes six real
-integrations, the abstraction has stopped paying for itself and should be
+vLLM, Jina, Voyage and self-hosted embedders speak the OpenAI-compatible API;
+TypeSafe's Jev speaks its own decision endpoint, because it has no chat
+interface to be compatible with (ADR-0027). So twelve providers use four
+adapters and a table. That ratio is the whole justification for the package
+existing — if it ever becomes six real integrations, the abstraction has stopped paying for itself and should be
 reconsidered rather than extended.
 
 **One call shape (`call_tool`), tool-forced.** A `call_text` existed briefly and
 was deleted: no caller in either consuming project ever used it. Both want a
 typed answer. Adding it back requires an actual caller, not an anticipated one —
 its presence also forced `CallResult.payload` into a `dict | str` union that
-made every consumer's indexing unsound.
+made every consumer's indexing unsound. `call_choice`, `embed` and `ocr` are
+not second conversational shapes: each is a fixed task with its own result type
+(ADR-0026, ADR-0027).
+
+**Embeddings never fall back.** Vectors from two models do not share a space, so
+a fallback embedding would sit in an index looking valid and match nothing.
 
 **Retry the chosen provider, then fall back once — `retryable` only.**
 Connection errors, rate limits, overloads and refusals climb a ladder on the
