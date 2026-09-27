@@ -346,9 +346,10 @@ agent = emissary.Agent(
                 "additionalProperties": False,
             },
             execute=add,
+            api_scope="none",
         ),
     ),
-    limits=emissary.RunLimits(max_turns=6, max_tool_calls=4),
+    limits=emissary.RunLimits(max_turns=6, max_tool_calls=4, max_tool_attempts=4),
 )
 
 result = emissary.run(
@@ -366,7 +367,39 @@ else:
 Tools are JSON-Schema validated before any call in a batch executes. Tools
 marked `approval="always"` require an injected approver; without one the run
 pauses before the effect. Every model call, proposed action, tool outcome, and
-terminal transition is represented in the run's ordered event trajectory.
+terminal transition is represented in the run's ordered event trajectory. An
+injected event sink is an observer: its failure is logged without discarding
+the authoritative run result or repeating an effect.
+
+`RunLimits` defaults to 12 model turns, 12 model request attempts, 40 logical
+tool calls, 40 total tool attempts (including retries), 20 internal API
+attempts, five external API attempts, 512 KiB of serialized model input,
+64 KiB per tool result, and 300 seconds. Read-only tools must declare
+`api_scope="none"`, `"internal"`, or `"external"`; `side_effect="local"`
+and `"external"` infer no API and external API access respectively when no
+scope is set. Each attempt spends the applicable
+budget before dispatch. Idempotent tool retries wait with exponential backoff
+(0.25, 0.5, 1 seconds, capped at 30 seconds by default); the per-tool base is
+`retry_backoff_seconds`. Exceeding a count limit returns
+a typed stopped result. The elapsed-time limit raises `TimeoutError`; `arun`
+cancels the active await, while `run` checks time between effects. In-process
+synchronous model callers and tools must return for that check to run. Run
+untrusted or potentially blocking code in an application-owned isolated
+process with its own kill deadline; the harness does not create worker threads.
+The built-in model callers count each provider request against the run budget,
+including retries and fallback. The OpenAI-compatible, Anthropic, and Gemini
+SDK clients make one transport attempt per Emissary attempt and use a 30-second
+request timeout. An opaque custom caller counts as one invocation because the
+harness cannot observe requests it makes internally.
+
+For a synchronous request hosted in an application thread, pass a
+`threading.Event` as `cancel_event` to `run()` and set it when the client
+disconnects. This stops admission of later model and tool attempts and wakes
+retry waits; it cannot interrupt a synchronous callback already running.
+An async frontend should cancel the task awaiting `arun()` or `acall_model()`;
+Emissary creates no per-request thread, and its async streams close on
+cancellation. A frontend that needs to terminate arbitrary blocking callbacks
+must own them in a process, because Python cannot kill a running thread.
 
 ## Memory
 
@@ -386,7 +419,7 @@ agent = emissary.Agent(
         memory.remember_fact_tool(facts),
         memory.take_note_tool(scratchpad),
         memory.recall_episodes_tool(episodes),
-        memory.vector_search_tool(stories, name="search_stories",
+        memory.vector_search_tool(stories, name="search_stories", api_scope="internal",
                                   description="...", filters_schema={...}),
     ),
 )

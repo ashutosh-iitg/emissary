@@ -51,8 +51,8 @@ def test_outcome_dimensions_are_reported_independently_of_severity():
 
 
 def test_registry_rejects_duplicate_names_and_exposes_model_definitions():
-    first = Tool("lookup", "Look up.", {"type": "object"}, dict)
-    second = Tool("lookup", "Different.", {"type": "object"}, dict)
+    first = Tool("lookup", "Look up.", {"type": "object"}, dict, api_scope="none")
+    second = Tool("lookup", "Different.", {"type": "object"}, dict, api_scope="none")
 
     with pytest.raises(ValueError, match="duplicate"):
         ToolRegistry((first, second))

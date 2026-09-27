@@ -77,6 +77,8 @@ def _client(spec: Spec, *, is_async: bool = False):
         # vLLM's OpenAI-compatible server doesn't validate the key, but the
         # SDK still requires a non-empty string to construct a client.
         api_key=api_key or "not-required",
+        max_retries=0,
+        timeout=30.0,
         **({"base_url": base_url} if base_url else {}),
     )
 

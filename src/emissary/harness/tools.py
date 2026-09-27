@@ -66,6 +66,8 @@ class Tool:
     approval: Literal["never", "always", "policy"] = "never"
     idempotent: bool = False
     max_attempts: int = 1
+    api_scope: Literal["none", "internal", "external"] | None = None
+    retry_backoff_seconds: float = 0.25
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -74,6 +76,14 @@ class Tool:
             raise ValueError("max_attempts must be positive")
         if self.max_attempts > 1 and not self.idempotent:
             raise ValueError(f"tool {self.name!r} cannot retry without declaring itself idempotent")
+        if self.api_scope not in (None, "none", "internal", "external"):
+            raise ValueError(f"tool {self.name!r} has invalid api_scope")
+        if self.side_effect == "external" and self.api_scope == "none":
+            raise ValueError(f"tool {self.name!r} cannot classify external effects as no API")
+        if not 0 <= self.retry_backoff_seconds < float("inf"):
+            raise ValueError(
+                f"tool {self.name!r} retry_backoff_seconds must be finite and non-negative"
+            )
         try:
             Draft202012Validator.check_schema(self.input_schema)
             if self.output_schema is not None:
@@ -88,6 +98,17 @@ class Tool:
         )
 
     @property
+    def effective_api_scope(self) -> Literal["none", "internal", "external"]:
+        """Infer from a declared side effect or require explicit read-only classification."""
+        if self.api_scope is not None:
+            return self.api_scope
+        if self.side_effect == "external":
+            return "external"
+        if self.side_effect == "local":
+            return "none"
+        raise ValueError(f"tool {self.name!r} must declare api_scope when side_effect is none")
+
+    @property
     def fingerprint(self) -> str:
         contract = {
             "name": self.name,
@@ -96,6 +117,7 @@ class Tool:
             "output_schema": self.output_schema,
             "side_effect": self.side_effect,
             "approval": self.approval,
+            "api_scope": self.api_scope,
         }
         encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
@@ -151,6 +173,8 @@ class LocalToolExecutor:
 
 class ToolRegistry:
     def __init__(self, tools: tuple[Tool, ...]):
+        for tool in tools:
+            _scope = tool.effective_api_scope
         by_name = {tool.name: tool for tool in tools}
         if len(by_name) != len(tools):
             raise ValueError("duplicate tool names are not allowed")

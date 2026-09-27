@@ -8,7 +8,7 @@ consolidation, where they can carry evidence.
 """
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from ..harness.tools import Tool
 from .records import Fact
@@ -100,6 +100,7 @@ def recall_episodes_tool(store: EpisodeStore, *, max_limit: int = 5) -> Tool:
             {"limit": {"type": "integer", "minimum": 1, "maximum": max_limit}}, ["limit"]
         ),
         execute=recall,
+        api_scope="none",
     )
 
 
@@ -108,6 +109,7 @@ def vector_search_tool(
     *,
     name: str,
     description: str,
+    api_scope: Literal["none", "internal", "external"],
     filters_schema: dict[str, Any] | None = None,
     max_limit: int = 10,
 ) -> Tool:
@@ -139,6 +141,7 @@ def vector_search_tool(
         input_schema=_object(properties, ["query", "limit"]),
         output_schema=_MATCHES_SCHEMA,
         execute=search,
+        api_scope=api_scope,
     )
 
 

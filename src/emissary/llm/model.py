@@ -1,7 +1,8 @@
 """The sole provider-neutral model-call boundary used by agent runtimes."""
 
 import logging
-from collections.abc import Awaitable
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -106,6 +107,7 @@ async def acall_model(
 @dataclass(frozen=True)
 class SpecModelCaller:
     spec: Spec
+    before_attempt: Callable[[], None] | None = None
 
     def __call__(
         self,
@@ -116,6 +118,8 @@ class SpecModelCaller:
         settings: ModelSettings | None = None,
         sink: StreamSink | None = None,
     ) -> ModelResult:
+        if self.before_attempt is not None:
+            self.before_attempt()
         return call_model(
             self.spec, system=system, messages=messages, tools=tools, settings=settings, sink=sink
         )
@@ -124,6 +128,7 @@ class SpecModelCaller:
 @dataclass(frozen=True)
 class AsyncSpecModelCaller:
     spec: Spec
+    before_attempt: Callable[[], None] | None = None
 
     async def __call__(
         self,
@@ -134,6 +139,8 @@ class AsyncSpecModelCaller:
         settings: ModelSettings | None = None,
         sink: AsyncStreamSink | None = None,
     ) -> ModelResult:
+        if self.before_attempt is not None:
+            self.before_attempt()
         return await acall_model(
             self.spec, system=system, messages=messages, tools=tools, settings=settings, sink=sink
         )
@@ -143,6 +150,8 @@ class AsyncSpecModelCaller:
 class FallbackModelCaller:
     primary: Spec
     fallback: Spec | None = None
+    before_attempt: Callable[[], None] | None = None
+    retry_sleep: Callable[[float], None] = time.sleep
 
     def __call__(
         self,
@@ -156,6 +165,8 @@ class FallbackModelCaller:
         tracked = TrackingStreamSink(sink) if sink is not None else None
 
         def attempt(spec: Spec) -> ModelResult:
+            if self.before_attempt is not None:
+                self.before_attempt()
             try:
                 return call_model(
                     spec,
@@ -182,6 +193,7 @@ class FallbackModelCaller:
             self.primary,
             self.fallback,
             attempt,
+            sleep=self.retry_sleep,
         )
 
 
@@ -196,6 +208,7 @@ class AsyncFallbackModelCaller:
 
     primary: Spec
     fallback: Spec | None = None
+    before_attempt: Callable[[], None] | None = None
 
     async def __call__(
         self,
@@ -209,6 +222,8 @@ class AsyncFallbackModelCaller:
         tracked = AsyncTrackingStreamSink(sink) if sink is not None else None
 
         async def attempt(spec: Spec) -> ModelResult:
+            if self.before_attempt is not None:
+                self.before_attempt()
             try:
                 return await acall_model(
                     spec,

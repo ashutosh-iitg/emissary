@@ -7,7 +7,11 @@ same trajectory as `run`, and that the machine itself performs no I/O at all.
 """
 
 import asyncio
+import threading
+import time
 from dataclasses import dataclass, field
+
+import pytest
 
 from emissary.harness.agent import Agent, RunLimits
 from emissary.harness.effects import CallModel, ExecuteTool, ValidateTool
@@ -18,8 +22,10 @@ from emissary.harness.state import RunStatus, StopReason
 from emissary.harness.tools import LocalToolExecutor, Tool, ToolResult
 from emissary.llm.decision import FinalOutput, ModelResult, ToolCall, ToolCalls, Usage
 from emissary.llm.errors import ProviderError
+from emissary.llm.model import AsyncFallbackModelCaller, FallbackModelCaller
+from emissary.llm.provider import parse_spec
 
-ADD = Tool("add", "Add.", {"type": "object"}, lambda a, b: {"sum": a + b})
+ADD = Tool("add", "Add.", {"type": "object"}, lambda a, b: {"sum": a + b}, api_scope="none")
 
 
 @dataclass
@@ -148,6 +154,221 @@ async def test_two_runs_interleave_on_one_thread():
     assert order.index("b-start") < order.index("a-end")
 
 
+async def test_async_run_deadline_cancels_stalled_model_call():
+    cancelled = asyncio.Event()
+
+    async def stalled(**kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    agent = Agent("stalled", "Wait.", limits=RunLimits(max_duration_seconds=0.01))
+    with pytest.raises(TimeoutError):
+        await arun(agent, "go", caller=stalled)
+    assert cancelled.is_set()
+
+
+def test_tool_retry_attempt_budget_stops_run():
+    tool = Tool(
+        "fail",
+        "Fail.",
+        {"type": "object"},
+        lambda **kwargs: ToolResult("error", "retry", retryable=True),
+        idempotent=True,
+        max_attempts=10,
+        api_scope="none",
+    )
+    agent = Agent("bounded", "Use tools.", tools=(tool,), limits=RunLimits(max_tool_attempts=2))
+    caller = ScriptedCaller([ToolCalls((ToolCall("one", "fail", {}),))])
+    result = run(agent, "go", caller=caller)
+    assert result.stop_reason is StopReason.MAX_TOOL_ATTEMPTS
+    assert len([event for event in result.events if event.kind == "tool_call_retried"]) == 2
+
+
+def test_sync_run_checks_deadline_after_blocking_effect_returns():
+    def slow(**kwargs):
+        time.sleep(0.02)
+        return ModelResult(FinalOutput(text="late"), "fake", "scripted", Usage(1, 1))
+
+    agent = Agent("slow", "Wait.", limits=RunLimits(max_duration_seconds=0.001))
+    with pytest.raises(TimeoutError):
+        run(agent, "go", caller=slow)
+
+
+@pytest.mark.parametrize(
+    ("scope", "side_effect", "limit_name", "reason"),
+    [
+        ("internal", "none", "max_internal_api_attempts", StopReason.MAX_INTERNAL_API_ATTEMPTS),
+        (None, "external", "max_external_api_attempts", StopReason.MAX_EXTERNAL_API_ATTEMPTS),
+    ],
+)
+def test_api_attempt_budget_counts_before_dispatch(scope, side_effect, limit_name, reason):
+    attempts = []
+
+    def invoke():
+        attempts.append(1)
+        return ToolResult("success", "ok")
+
+    tool = Tool("api", "API.", {"type": "object"}, invoke, api_scope=scope, side_effect=side_effect)
+    limits = RunLimits(**{limit_name: 1})
+    agent = Agent("bounded", "Use tools.", tools=(tool,), limits=limits)
+    caller = ScriptedCaller([ToolCalls((ToolCall("one", "api", {}), ToolCall("two", "api", {})))])
+
+    result = run(agent, "go", caller=caller)
+
+    assert result.stop_reason is reason
+    assert len(attempts) == 1
+
+
+def test_tool_retry_uses_exponential_backoff(monkeypatch):
+    delays = []
+    monkeypatch.setattr("emissary.harness.runner.time.sleep", delays.append)
+    attempts = []
+
+    def invoke(*, idempotency_key):
+        attempts.append(idempotency_key)
+        return (
+            ToolResult("error", "retry", retryable=True)
+            if len(attempts) < 3
+            else ToolResult("success", "ok")
+        )
+
+    tool = Tool(
+        "api",
+        "API.",
+        {"type": "object"},
+        invoke,
+        idempotent=True,
+        max_attempts=3,
+        api_scope="external",
+    )
+    agent = Agent("bounded", "Use tools.", tools=(tool,))
+    caller = ScriptedCaller([ToolCalls((ToolCall("one", "api", {}),)), FinalOutput(text="done")])
+
+    assert run(agent, "go", caller=caller).status is RunStatus.COMPLETED
+    assert delays == [0.25, 0.5]
+    assert len(set(attempts)) == 1
+
+
+def test_physical_model_attempt_budget_stops_fallback_before_extra_request(monkeypatch):
+    attempts = []
+
+    def failed_request(spec, **kwargs):
+        attempts.append(spec.name)
+        raise ProviderError("unavailable", retryable=True)
+
+    monkeypatch.setattr("emissary.llm.model.call_model", failed_request)
+    monkeypatch.setattr("emissary.llm.retry.RETRY_DELAYS", (0.0, 0.0, 0.0))
+    caller = FallbackModelCaller(parse_spec("anthropic"), parse_spec("kimi"))
+    agent = Agent("bounded", "Use model.", limits=RunLimits(max_model_attempts=2))
+
+    result = run(agent, "go", caller=caller)
+
+    assert result.stop_reason is StopReason.MAX_MODEL_ATTEMPTS
+    assert attempts == ["anthropic", "anthropic"]
+
+
+def test_sync_cancellation_prevents_model_retry(monkeypatch):
+    cancel_event = threading.Event()
+    attempts = []
+
+    def failed_request(spec, **kwargs):
+        attempts.append(spec.name)
+        cancel_event.set()
+        raise ProviderError("unavailable", retryable=True)
+
+    monkeypatch.setattr("emissary.llm.model.call_model", failed_request)
+    monkeypatch.setattr("emissary.llm.retry.RETRY_DELAYS", (10.0, 30.0, 60.0))
+    caller = FallbackModelCaller(parse_spec("anthropic"))
+
+    result = run(_agent(), "go", caller=caller, cancel_event=cancel_event)
+
+    assert result.status is RunStatus.CANCELLED
+    assert result.stop_reason is StopReason.CANCELLED
+    assert attempts == ["anthropic"]
+
+
+async def test_async_cancellation_stops_pending_model_request():
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def request(spec, **kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr("emissary.llm.model.acall_model", request)
+        caller = AsyncFallbackModelCaller(parse_spec("anthropic"))
+        task = asyncio.create_task(arun(_agent(), "go", caller=caller))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert closed.is_set()
+
+
+def test_sdk_clients_do_not_add_hidden_retries(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from emissary.llm.wire import anthropic, openai_compatible
+
+    openai_client = MagicMock()
+    anthropic_client = MagicMock()
+    monkeypatch.setattr("openai.OpenAI", openai_client)
+    monkeypatch.setattr("anthropic.Anthropic", anthropic_client)
+
+    openai_compatible._client(parse_spec("kimi"))
+    anthropic._create(__import__("anthropic"), {})
+
+    assert openai_client.call_args.kwargs["max_retries"] == 0
+    assert openai_client.call_args.kwargs["timeout"] == 30.0
+    assert anthropic_client.call_args.kwargs["max_retries"] == 0
+    assert anthropic_client.call_args.kwargs["timeout"] == 30.0
+
+
+async def test_cancelled_gemini_stream_closes_its_generator(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from emissary.llm.wire import gemini
+
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def chunks():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+            yield MagicMock()
+        finally:
+            closed.set()
+
+    client = MagicMock()
+
+    async def open_stream(**kwargs):
+        return chunks()
+
+    client.aio.models.generate_content_stream = open_stream
+    monkeypatch.setattr(gemini, "_client", lambda spec: client)
+
+    class Sink:
+        async def on_text(self, delta):
+            pass
+
+        async def on_thinking(self, delta):
+            pass
+
+    task = asyncio.create_task(gemini._astream(parse_spec("gemini"), {}, Sink()))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set()
+
+
 # --- The machine itself ----------------------------------------------------
 
 
@@ -241,4 +462,61 @@ def test_the_effect_union_stays_small_enough_for_thin_drivers():
     paying for itself (ADR-0024). Both drivers must stay exhaustive over it."""
     from emissary.harness import effects
 
-    assert set(effects.__all__) == {"CallModel", "Effect", "ExecuteTool", "ValidateTool"}
+    assert set(effects.__all__) == {
+        "CallModel",
+        "Effect",
+        "ExecuteTool",
+        "ValidateTool",
+        "WaitRetry",
+    }
+
+
+def test_model_input_limit_rejects_before_a_billable_request():
+    caller = ScriptedCaller([FinalOutput(text="unused")])
+    agent = Agent("bounded", "Use tools.", limits=RunLimits(max_model_input_bytes=1))
+
+    result = run(agent, "large task", caller=caller)
+
+    assert result.stop_reason is StopReason.MODEL_INPUT_LIMIT
+    assert caller.messages_seen == []
+
+
+def test_oversized_tool_result_never_enters_the_next_prompt():
+    tool = Tool("large", "Large.", {"type": "object"}, lambda: "x" * 1000, api_scope="none")
+    caller = ScriptedCaller([ToolCalls((ToolCall("one", "large", {}),))])
+    agent = Agent(
+        "bounded", "Use tools.", tools=(tool,), limits=RunLimits(max_tool_result_bytes=100)
+    )
+
+    result = run(agent, "go", caller=caller)
+
+    assert result.stop_reason is StopReason.TOOL_RESULT_LIMIT
+    assert len(caller.messages_seen) == 1
+    completed = [event for event in result.events if event.kind == "tool_call_completed"]
+    assert len(completed) == 1
+    assert "x" * 100 not in str(completed[0].data)
+
+
+def test_failing_event_sink_cannot_erase_a_completed_tool_effect():
+    effects = []
+    tool = Tool(
+        "write", "Write.", {"type": "object"}, lambda: effects.append(1) or "ok", api_scope="none"
+    )
+    caller = ScriptedCaller([ToolCalls((ToolCall("one", "write", {}),)), FinalOutput(text="done")])
+
+    class BrokenSink:
+        def emit(self, event):
+            if event.kind == "tool_call_completed":
+                raise RuntimeError("observer broke")
+
+    result = run(Agent("a", "i", tools=(tool,)), "go", caller=caller, event_sink=BrokenSink())
+
+    assert result.status is RunStatus.COMPLETED
+    assert effects == [1]
+    assert "tool_call_completed" in [event.kind for event in result.events]
+
+
+def test_read_only_tools_must_classify_api_access():
+    tool = Tool("lookup", "Lookup.", {"type": "object"}, dict)
+    with pytest.raises(ValueError, match="api_scope"):
+        run(Agent("a", "i", tools=(tool,)), "go", caller=ScriptedCaller([]))

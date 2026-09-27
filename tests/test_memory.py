@@ -90,6 +90,7 @@ def test_vector_search_passes_the_application_defined_filters_through():
         store,
         name="search_stories",
         description="Find stories the learner has heard.",
+        api_scope="internal",
         filters_schema={
             "type": "object",
             "properties": {"programme": {"type": "string"}},
@@ -108,6 +109,7 @@ def test_vector_search_rejects_filters_outside_the_declared_schema():
         RecordingVectorStore(),
         name="search_stories",
         description="Find stories.",
+        api_scope="internal",
         filters_schema={"type": "object", "additionalProperties": False},
     )
 

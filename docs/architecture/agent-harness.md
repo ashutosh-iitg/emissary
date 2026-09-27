@@ -43,7 +43,7 @@ These are release gates, not preferences.
 4. **Model output is untrusted:** every decision, tool name, argument object, and final structured output is validated.
 5. **The runner owns control:** the model proposes; the runner authorizes, executes, budgets, records, and stops.
 6. **No invisible effects:** every attempted tool execution emits an event and has a stable call ID.
-7. **No unbounded default:** every run has finite turn and tool-call limits.
+7. **No unbounded default:** every run has finite turn, physical model-attempt, logical tool-call, total tool-attempt, internal API-attempt, external API-attempt, serialized model-input, tool-result, and elapsed-time limits. Built-in callers count every provider retry and fallback attempt, and SDK retries are disabled. Read-only tools declare API access before registration. Idempotent tool retries use capped exponential backoff. Async waits are cancelled at the deadline; synchronous in-process effects require an application-owned isolated process for forced termination.
 8. **No broad retries:** model fallback retains the existing availability-only policy; state-changing tools do not retry unless their tool policy opts in and supplies idempotency semantics.
 9. **Serializable state model:** core state and events contain data, not callables or SDK values, even before durable storage exists.
 10. **Network-free tests:** all core and wire behavior is testable with scripted model turns and mocked SDK clients.

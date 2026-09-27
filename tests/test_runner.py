@@ -27,7 +27,9 @@ def test_runner_completes_after_a_tool_observation():
     agent = Agent(
         "calculator",
         "Use tools.",
-        tools=(Tool("add", "Add.", {"type": "object"}, lambda a, b: {"sum": a + b}),),
+        tools=(
+            Tool("add", "Add.", {"type": "object"}, lambda a, b: {"sum": a + b}, api_scope="none"),
+        ),
     )
     sink = InMemoryEventSink()
 
@@ -61,6 +63,7 @@ def test_invalid_tool_batch_has_no_effects():
                 "Write.",
                 {"type": "object"},
                 lambda **kwargs: effects.append(kwargs),
+                api_scope="none",
             ),
         ),
     )
@@ -79,7 +82,7 @@ def test_tool_errors_are_observations_the_model_can_recover_from():
     agent = Agent(
         "lookup",
         "Look up.",
-        tools=(Tool("lookup", "Lookup.", {"type": "object"}, lambda: 1 / 0),),
+        tools=(Tool("lookup", "Lookup.", {"type": "object"}, lambda: 1 / 0, api_scope="none"),),
     )
 
     result = run(agent, "lookup", caller=caller)
@@ -90,7 +93,7 @@ def test_tool_errors_are_observations_the_model_can_recover_from():
 
 def test_turn_and_tool_limits_are_terminal_typed_results():
     call = ToolCalls((ToolCall("one", "noop", {}),))
-    tool = Tool("noop", "Noop.", {"type": "object"}, dict)
+    tool = Tool("noop", "Noop.", {"type": "object"}, dict, api_scope="none")
 
     turn_limited = run(
         Agent("a", "i", tools=(tool,), limits=RunLimits(max_turns=1)),
@@ -118,7 +121,15 @@ def test_an_idempotent_tool_retries_under_the_same_key():
             return ToolResult("error", "connection reset", retryable=True)
         return ToolResult("success", "fetched")
 
-    tool = Tool("fetch", "Fetch.", {"type": "object"}, flaky, idempotent=True, max_attempts=2)
+    tool = Tool(
+        "fetch",
+        "Fetch.",
+        {"type": "object"},
+        flaky,
+        idempotent=True,
+        max_attempts=2,
+        api_scope="external",
+    )
     caller = ScriptedCaller([ToolCalls((ToolCall("one", "fetch", {}),)), FinalOutput(text="done")])
 
     result = run(Agent("a", "i", tools=(tool,)), "task", caller=caller)
@@ -135,7 +146,7 @@ def test_a_tool_that_has_not_declared_idempotency_runs_exactly_once():
         attempts.append(1)
         return ToolResult("error", "connection reset", retryable=True)
 
-    tool = Tool("charge", "Charge.", {"type": "object"}, unsafe)
+    tool = Tool("charge", "Charge.", {"type": "object"}, unsafe, api_scope="external")
     caller = ScriptedCaller([ToolCalls((ToolCall("one", "charge", {}),)), FinalOutput(text="x")])
 
     run(Agent("a", "i", tools=(tool,)), "task", caller=caller)
@@ -154,8 +165,8 @@ def test_a_flaky_tool_is_isolated_rather_than_consuming_the_whole_run():
         return ToolResult("error", "upstream down")
 
     tools = (
-        Tool("flaky", "Flaky.", {"type": "object"}, flaky),
-        Tool("ok", "Fine.", {"type": "object"}, dict),
+        Tool("flaky", "Flaky.", {"type": "object"}, flaky, api_scope="none"),
+        Tool("ok", "Fine.", {"type": "object"}, dict, api_scope="none"),
     )
     decisions = []
     for n in range(3):
@@ -196,7 +207,7 @@ def test_a_rejected_batch_still_records_what_the_model_proposed():
     validation — so calls that never ran are still in the surface. That is
     factually what happened, and what a resumed run needs."""
     calls = (ToolCall("one", "write", {}), ToolCall("two", "missing", {}))
-    tool = Tool("write", "Write.", {"type": "object"}, dict)
+    tool = Tool("write", "Write.", {"type": "object"}, dict, api_scope="none")
 
     result = run(
         Agent("writer", "Write.", tools=(tool,)),

@@ -50,6 +50,7 @@ def test_approver_can_allow_or_reject_without_prompt_authority():
         {"type": "object"},
         lambda: effects.append("sent") or {"ok": True},
         approval="always",
+        api_scope="none",
     )
     caller = Caller([ToolCalls((ToolCall("one", "send", {}),)), FinalOutput(text="done")])
 
@@ -76,7 +77,7 @@ def test_trimming_destructively_shows_the_model_what_filtering_would_have():
     """Destructive ops are what compaction needs, but they must not change the
     per-turn surface a recency window produces. This is that claim, executed."""
     calls = [ToolCall(str(n), "step", {}) for n in range(3)]
-    tool = Tool("step", "Step.", {"type": "object"}, dict)
+    tool = Tool("step", "Step.", {"type": "object"}, dict, api_scope="none")
     caller = Caller([ToolCalls((call,)) for call in calls] + [FinalOutput(text="done")])
 
     result = run(
