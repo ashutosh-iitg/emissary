@@ -173,15 +173,17 @@ def _request(
 
 
 def _create(anthropic, kwargs: dict[str, Any]):
-    return anthropic.Anthropic().messages.create(**kwargs)
+    return anthropic.Anthropic(max_retries=0, timeout=30.0).messages.create(**kwargs)
 
 
 async def _acreate(anthropic, kwargs: dict[str, Any]):
-    return await anthropic.AsyncAnthropic().messages.create(**kwargs)
+    return await anthropic.AsyncAnthropic(max_retries=0, timeout=30.0).messages.create(**kwargs)
 
 
 async def _astream(anthropic, kwargs: dict[str, Any], sink: AsyncStreamSink):
-    async with anthropic.AsyncAnthropic().messages.stream(**kwargs) as stream:
+    async with anthropic.AsyncAnthropic(max_retries=0, timeout=30.0).messages.stream(
+        **kwargs
+    ) as stream:
         async for event in stream:
             if event.type != "content_block_delta":
                 continue
@@ -199,7 +201,7 @@ def _stream(anthropic, kwargs: dict[str, Any], sink: StreamSink):
     intact, which hand-accumulating the deltas would not — the deltas carry the
     text but not the signature.
     """
-    with anthropic.Anthropic().messages.stream(**kwargs) as stream:
+    with anthropic.Anthropic(max_retries=0, timeout=30.0).messages.stream(**kwargs) as stream:
         for event in stream:
             if event.type != "content_block_delta":
                 continue
@@ -270,7 +272,7 @@ def call_tool(
     import anthropic
 
     try:
-        response = anthropic.Anthropic().messages.create(
+        response = anthropic.Anthropic(max_retries=0, timeout=30.0).messages.create(
             **_tool_request(spec, system, blocks, tool, effort)
         )
     except anthropic.APIStatusError as exc:
@@ -293,7 +295,7 @@ async def acall_tool(
     import anthropic
 
     try:
-        response = await anthropic.AsyncAnthropic().messages.create(
+        response = await anthropic.AsyncAnthropic(max_retries=0, timeout=30.0).messages.create(
             **_tool_request(spec, system, blocks, tool, effort)
         )
     except anthropic.APIStatusError as exc:

@@ -14,16 +14,19 @@ The body is a line-for-line translation of the synchronous loop it replaces:
 each former call site is now a `yield`, and nothing else moved.
 """
 
+import json
+import logging
 from collections.abc import Generator
+from dataclasses import asdict
 from typing import Any
 
 from ..llm.decision import FinalOutput, Refusal, ToolCalls, Usage
 from ..llm.errors import ProviderError
 from ..llm.messages import Message, TextBlock, UserMessage
-from .agent import Agent
+from .agent import Agent, ModelAttemptLimitExceeded, RunCancelled
 from .context import CompleteHistory, ContextPolicy
-from .effects import CallModel, Effect, ExecuteTool, ValidateTool
-from .events import EventSink, InMemoryEventSink, RunEvent, new_event
+from .effects import CallModel, Effect, ExecuteTool, ValidateTool, WaitRetry
+from .events import EventSink, NullEventSink, RunEvent, new_event
 from .policy import ApprovalDecision, Approver, approval_for
 from .projection import (
     context_op_data,
@@ -36,6 +39,8 @@ from .projection import (
 )
 from .state import RunResult, RunStatus, StopReason
 from .tools import ToolContext, ToolRegistry, ToolResult
+
+logger = logging.getLogger(__name__)
 
 
 def agent_machine(
@@ -59,12 +64,15 @@ def agent_machine(
     if history:
         validate_history(history)
 
-    sink = event_sink or InMemoryEventSink()
+    sink = event_sink if event_sink is not None else NullEventSink()
     context = context_policy or CompleteHistory()
     registry = ToolRegistry(agent.tools)
     events: list[RunEvent] = []
     usage = Usage(0, 0)
     tool_count = 0
+    tool_attempts = 0
+    internal_api_attempts = 0
+    external_api_attempts = 0
     consecutive_errors = 0
     tool_failures: dict[str, int] = {}
     open_circuits: set[str] = set()
@@ -72,7 +80,10 @@ def agent_machine(
     def emit(kind: str, **data) -> None:
         event = new_event(run_id, len(events) + 1, kind, **data)
         events.append(event)
-        sink.emit(event)
+        try:
+            sink.emit(event)
+        except Exception:
+            logger.exception("agent event sink failed for %s", kind)
 
     def finish(
         status: RunStatus, reason: StopReason, output: FinalOutput | None = None
@@ -96,6 +107,19 @@ def agent_machine(
             # from exactly one code path, so machine and projection cannot drift.
             surface = derive_messages(events)
 
+        request_bytes = len(
+            json.dumps(
+                {
+                    "system": agent.instructions,
+                    "messages": [message_to_data(message) for message in surface],
+                    "tools": [asdict(definition) for definition in registry.definitions],
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+        if request_bytes > agent.limits.max_model_input_bytes:
+            return finish(RunStatus.STOPPED, StopReason.MODEL_INPUT_LIMIT)
+
         emit("model_call_started", turn=turn + 1)
         try:
             # A driver reports provider failure by throwing in, so this reads
@@ -109,6 +133,10 @@ def agent_machine(
         except ProviderError as exc:
             emit("model_call_failed", retryable=exc.retryable)
             return finish(RunStatus.FAILED, StopReason.MODEL_ERROR)
+        except ModelAttemptLimitExceeded:
+            return finish(RunStatus.STOPPED, StopReason.MAX_MODEL_ATTEMPTS)
+        except RunCancelled:
+            return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
 
         usage = Usage(
             usage.input_tokens + model_result.usage.input_tokens,
@@ -143,7 +171,10 @@ def agent_machine(
             except KeyError:
                 emit("tool_call_rejected", call_id=call.id, reason="unknown_tool")
                 return finish(RunStatus.FAILED, StopReason.INVALID_TOOL)
-            invalid = yield ValidateTool(call, tool)
+            try:
+                invalid = yield ValidateTool(call, tool)
+            except RunCancelled:
+                return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
             if invalid is not None:
                 emit("tool_call_rejected", call_id=call.id, reason=invalid.summary)
                 return finish(RunStatus.FAILED, StopReason.INVALID_TOOL)
@@ -162,8 +193,29 @@ def agent_machine(
                 )
             else:
                 emit("tool_call_started", call_id=call.id, tool=call.name)
+                api_scope = tool.effective_api_scope
                 for attempt in range(1, tool.max_attempts + 1):
-                    outcome = yield ExecuteTool(call, tool, ToolContext(run_id, attempt))
+                    if tool_attempts >= agent.limits.max_tool_attempts:
+                        return finish(RunStatus.STOPPED, StopReason.MAX_TOOL_ATTEMPTS)
+                    if (
+                        api_scope == "internal"
+                        and internal_api_attempts >= agent.limits.max_internal_api_attempts
+                    ):
+                        return finish(RunStatus.STOPPED, StopReason.MAX_INTERNAL_API_ATTEMPTS)
+                    if (
+                        api_scope == "external"
+                        and external_api_attempts >= agent.limits.max_external_api_attempts
+                    ):
+                        return finish(RunStatus.STOPPED, StopReason.MAX_EXTERNAL_API_ATTEMPTS)
+                    tool_attempts += 1
+                    if api_scope == "internal":
+                        internal_api_attempts += 1
+                    elif api_scope == "external":
+                        external_api_attempts += 1
+                    try:
+                        outcome = yield ExecuteTool(call, tool, ToolContext(run_id, attempt))
+                    except RunCancelled:
+                        return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
                     # `max_attempts > 1` already implies idempotent (Tool rejects
                     # otherwise), so a retryable failure is safe to repeat here.
                     if not outcome.retryable or attempt == tool.max_attempts:
@@ -174,6 +226,12 @@ def agent_machine(
                         attempt=attempt,
                         reason=outcome.summary,
                     )
+                    try:
+                        yield WaitRetry(
+                            min(tool.retry_backoff_seconds * 2 ** min(attempt - 1, 16), 30.0)
+                        )
+                    except RunCancelled:
+                        return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
                 if outcome.status == "error":
                     tool_failures[call.name] = tool_failures.get(call.name, 0) + 1
                     if tool_failures[call.name] >= agent.limits.max_tool_failures:
@@ -186,6 +244,14 @@ def agent_machine(
                 else:
                     tool_failures[call.name] = 0
             tool_count += 1
+            try:
+                result_bytes = len(json.dumps(asdict(outcome), ensure_ascii=False).encode("utf-8"))
+            except (TypeError, ValueError):
+                result_bytes = agent.limits.max_tool_result_bytes + 1
+            if result_bytes > agent.limits.max_tool_result_bytes:
+                outcome = ToolResult("error", f"{call.name} result exceeded run byte limit")
+                emit("tool_call_completed", **tool_result_data(call, outcome))
+                return finish(RunStatus.STOPPED, StopReason.TOOL_RESULT_LIMIT)
             consecutive_errors = consecutive_errors + 1 if outcome.status == "error" else 0
             emit("tool_call_completed", **tool_result_data(call, outcome))
             if consecutive_errors >= agent.limits.max_consecutive_tool_errors:

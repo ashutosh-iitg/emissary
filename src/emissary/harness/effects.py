@@ -54,6 +54,13 @@ class ExecuteTool:
     context: ToolContext
 
 
-Effect = CallModel | ValidateTool | ExecuteTool
+@dataclass(frozen=True)
+class WaitRetry:
+    """Delay before another attempt at an idempotent tool call."""
 
-__all__ = ["CallModel", "Effect", "ExecuteTool", "ValidateTool"]
+    seconds: float
+
+
+Effect = CallModel | ValidateTool | ExecuteTool | WaitRetry
+
+__all__ = ["CallModel", "Effect", "ExecuteTool", "ValidateTool", "WaitRetry"]

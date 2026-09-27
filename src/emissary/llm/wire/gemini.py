@@ -66,6 +66,9 @@ def _sdk():
 
 def _client(spec: Spec):
     genai = _sdk()
+    http_options = genai.types.HttpOptions(
+        timeout=30_000, retry_options=genai.types.HttpRetryOptions(attempts=1)
+    )
 
     credential = spec.provider.credential
     if isinstance(credential, GoogleADC):
@@ -74,8 +77,13 @@ def _client(spec: Spec):
             raise ProviderError(f"{spec}: {credential.describe()} is not configured")
         # `enterprise` replaced `vertexai`, which the SDK keeps only as a
         # legacy alias. ADC is resolved by the SDK, so no key is passed.
-        return genai.Client(enterprise=True, project=project, location=credential.location())
-    return genai.Client(api_key=credential.token())
+        return genai.Client(
+            enterprise=True,
+            project=project,
+            location=credential.location(),
+            http_options=http_options,
+        )
+    return genai.Client(api_key=credential.token(), http_options=http_options)
 
 
 def _encode_signature(value: Any) -> Any:
@@ -247,19 +255,25 @@ async def _astream(spec: Spec, request: dict[str, Any], sink: AsyncStreamSink) -
     blocks: list[dict[str, Any]] = []
     finish_reason = usage = None
     model = spec.model
-    async for chunk in await _client(spec).aio.models.generate_content_stream(**request):
-        chunk_blocks, chunk_finish, chunk_usage, chunk_model = _unpack(spec, chunk)
-        for block in chunk_blocks:
-            text = block.get("text")
-            if text:
-                if block.get("thought"):
-                    await sink.on_thinking(text)
-                else:
-                    await sink.on_text(text)
-            _absorb(blocks, block)
-        finish_reason = chunk_finish or finish_reason
-        usage = chunk_usage or usage
-        model = chunk_model or model
+    stream = await _client(spec).aio.models.generate_content_stream(**request)
+    try:
+        async for chunk in stream:
+            chunk_blocks, chunk_finish, chunk_usage, chunk_model = _unpack(spec, chunk)
+            for block in chunk_blocks:
+                text = block.get("text")
+                if text:
+                    if block.get("thought"):
+                        await sink.on_thinking(text)
+                    else:
+                        await sink.on_text(text)
+                _absorb(blocks, block)
+            finish_reason = chunk_finish or finish_reason
+            usage = chunk_usage or usage
+            model = chunk_model or model
+    finally:
+        close = getattr(stream, "aclose", None)
+        if close is not None:
+            await close()
     return _normalize(spec, tuple(blocks), finish_reason, usage, model)
 
 
@@ -305,17 +319,23 @@ def _stream(spec: Spec, request: dict[str, Any], sink: StreamSink) -> ModelResul
     blocks: list[dict[str, Any]] = []
     finish_reason = usage = None
     model = spec.model
-    for chunk in _client(spec).models.generate_content_stream(**request):
-        chunk_blocks, chunk_finish, chunk_usage, chunk_model = _unpack(spec, chunk)
-        for block in chunk_blocks:
-            text = block.get("text")
-            if text:
-                sink.on_thinking(text) if block.get("thought") else sink.on_text(text)
-            _absorb(blocks, block)
-        # Later chunks carry the authoritative stop reason and cumulative usage.
-        finish_reason = chunk_finish or finish_reason
-        usage = chunk_usage or usage
-        model = chunk_model or model
+    stream = _client(spec).models.generate_content_stream(**request)
+    try:
+        for chunk in stream:
+            chunk_blocks, chunk_finish, chunk_usage, chunk_model = _unpack(spec, chunk)
+            for block in chunk_blocks:
+                text = block.get("text")
+                if text:
+                    sink.on_thinking(text) if block.get("thought") else sink.on_text(text)
+                _absorb(blocks, block)
+            # Later chunks carry the authoritative stop reason and cumulative usage.
+            finish_reason = chunk_finish or finish_reason
+            usage = chunk_usage or usage
+            model = chunk_model or model
+    finally:
+        close = getattr(stream, "close", None)
+        if close is not None:
+            close()
     return _normalize(spec, tuple(blocks), finish_reason, usage, model)
 
 

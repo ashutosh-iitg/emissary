@@ -29,7 +29,15 @@ FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 AGENT = Agent(
     "calculator",
     "Use the tool, then answer.",
-    tools=(Tool("add", "Add two integers.", {"type": "object"}, lambda a, b: {"sum": a + b}),),
+    tools=(
+        Tool(
+            "add",
+            "Add two integers.",
+            {"type": "object"},
+            lambda a, b: {"sum": a + b},
+            api_scope="none",
+        ),
+    ),
 )
 TASK = "what is 2 + 3?"
 

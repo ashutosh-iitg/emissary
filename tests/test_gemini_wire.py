@@ -154,6 +154,7 @@ def test_gemini_developer_api_does_not_use_enterprise():
         gemini.call_model(parse_spec("gemini"), system="s", messages=MESSAGES)
 
     assert not ctor.call_args.kwargs.get("enterprise")
+    assert ctor.call_args.kwargs["http_options"].retry_options.attempts == 1
 
 
 def test_every_provider_names_a_registered_wire():
