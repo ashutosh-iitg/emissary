@@ -50,6 +50,8 @@ class EvaluationReport:
     attempts: int
     successes: int
     runs: tuple[RunResult, ...]
+    passed: tuple[bool, ...] = ()
+    """The grader's verdict on each run, in order; empty when built by hand."""
 
     @property
     def pass_rate(self) -> float:
@@ -72,8 +74,8 @@ def evaluate(scenario: EvaluationScenario, *, attempts: int = 1) -> EvaluationRe
     if attempts <= 0:
         raise ValueError("attempts must be positive")
     runs = tuple(scenario.execute() for _ in range(attempts))
-    successes = sum(scenario.grade(result) for result in runs)
-    return EvaluationReport(scenario.name, attempts, successes, runs)
+    passed = tuple(bool(scenario.grade(result)) for result in runs)
+    return EvaluationReport(scenario.name, attempts, sum(passed), runs, passed)
 
 
 @dataclass(frozen=True)
