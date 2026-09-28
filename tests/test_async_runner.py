@@ -164,9 +164,27 @@ async def test_async_run_deadline_cancels_stalled_model_call():
             cancelled.set()
 
     agent = Agent("stalled", "Wait.", limits=RunLimits(max_duration_seconds=0.01))
-    with pytest.raises(TimeoutError):
-        await arun(agent, "go", caller=stalled)
+    sink = InMemoryEventSink()
+
+    result = await arun(agent, "go", caller=stalled, event_sink=sink)
+
+    # The duration limit is a budget like the others: a typed stop the log
+    # records, not an exception that leaves the trajectory without an end.
     assert cancelled.is_set()
+    assert result.status is RunStatus.STOPPED
+    assert result.stop_reason is StopReason.MAX_DURATION
+    assert sink.events[-1].kind == "run_stopped"
+
+
+async def test_a_timeout_raised_by_the_caller_is_not_mistaken_for_the_deadline():
+    """Only the run's own clock may produce MAX_DURATION; reporting a caller's
+    TimeoutError as a budget stop would hide a real failure behind a limit."""
+
+    async def times_out(**kwargs):
+        raise TimeoutError("caller's own")
+
+    with pytest.raises(TimeoutError, match="caller's own"):
+        await arun(_agent(), "go", caller=times_out)
 
 
 def test_tool_retry_attempt_budget_stops_run():
@@ -186,14 +204,23 @@ def test_tool_retry_attempt_budget_stops_run():
     assert len([event for event in result.events if event.kind == "tool_call_retried"]) == 2
 
 
-def test_sync_run_checks_deadline_after_blocking_effect_returns():
+def test_sync_deadline_admits_no_work_after_a_blocking_effect_overruns():
+    """A synchronous call cannot be interrupted, so the deadline gates the next
+    dispatch: the overrunning turn is recorded, and its tool call never runs."""
+    executed = []
+    tool = Tool("act", "Act.", {"type": "object"}, lambda: executed.append(1), api_scope="none")
+
     def slow(**kwargs):
         time.sleep(0.02)
-        return ModelResult(FinalOutput(text="late"), "fake", "scripted", Usage(1, 1))
+        return ModelResult(ToolCalls((ToolCall("one", "act", {}),)), "fake", "s", Usage(1, 1))
 
-    agent = Agent("slow", "Wait.", limits=RunLimits(max_duration_seconds=0.001))
-    with pytest.raises(TimeoutError):
-        run(agent, "go", caller=slow)
+    agent = Agent("slow", "Wait.", tools=(tool,), limits=RunLimits(max_duration_seconds=0.001))
+
+    result = run(agent, "go", caller=slow)
+
+    assert result.stop_reason is StopReason.MAX_DURATION
+    assert executed == []
+    assert [e.kind for e in result.events][-2:] == ["model_call_completed", "run_stopped"]
 
 
 @pytest.mark.parametrize(
@@ -303,12 +330,19 @@ async def test_async_cancellation_stops_pending_model_request():
     with pytest.MonkeyPatch.context() as patcher:
         patcher.setattr("emissary.llm.model.acall_model", request)
         caller = AsyncFallbackModelCaller(parse_spec("anthropic"))
-        task = asyncio.create_task(arun(_agent(), "go", caller=caller))
+        sink = InMemoryEventSink()
+        task = asyncio.create_task(arun(_agent(), "go", caller=caller, event_sink=sink))
         await started.wait()
         task.cancel()
+        # Cancellation must still propagate: swallowing it would break the
+        # caller's TaskGroup or timeout, which rely on seeing it.
         with pytest.raises(asyncio.CancelledError):
             await task
     assert closed.is_set()
+    # No RunResult survives a cancelled task, so the log is the only record of
+    # how the run ended; it must not stop mid-turn.
+    assert sink.events[-1].kind == "run_stopped"
+    assert sink.events[-1].data["reason"] == StopReason.CANCELLED.value
 
 
 def test_sdk_clients_do_not_add_hidden_retries(monkeypatch):
@@ -469,6 +503,19 @@ def test_the_effect_union_stays_small_enough_for_thin_drivers():
         "ValidateTool",
         "WaitRetry",
     }
+
+
+def test_an_unknown_effect_fails_loud_instead_of_running_as_a_tool():
+    """Were the dispatch to fall through, a new effect missed by a driver would
+    be performed as a tool execution — an unrequested side effect."""
+    from emissary.harness.runner import _perform
+
+    class NeverExecutes(LocalToolExecutor):
+        def execute(self, call, tool, context):
+            raise AssertionError("performed an unknown effect as a tool call")
+
+    with pytest.raises(TypeError, match="unhandled effect"):
+        _perform(object(), ScriptedCaller([]), NeverExecutes(), deadline=0.0)
 
 
 def test_model_input_limit_rejects_before_a_billable_request():

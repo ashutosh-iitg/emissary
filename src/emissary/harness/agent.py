@@ -14,6 +14,10 @@ class RunCancelled(Exception):
     """The owner cancelled a synchronous run."""
 
 
+class RunTimedOut(RunCancelled):
+    """The clock cancelled the run: `max_duration_seconds` elapsed."""
+
+
 @dataclass(frozen=True)
 class RunLimits:
     max_turns: int = 12

@@ -22,6 +22,7 @@ class StopReason(str, Enum):
     COMPLETED = "completed"
     REFUSAL = "refusal"
     MAX_TURNS = "max_turns"
+    MAX_DURATION = "max_duration"
     MAX_MODEL_ATTEMPTS = "max_model_attempts"
     MODEL_INPUT_LIMIT = "model_input_limit"
     TOOL_RESULT_LIMIT = "tool_result_limit"
