@@ -403,9 +403,9 @@ def render_report(decision: ImprovementDecision) -> str:
             f"## Attempt {attempt.number}: {attempt.summary}",
             "",
             f"**Expected effect (the improver's claim):** {attempt.expected_effect}",
-            "",
         ]
-        lines += [f"- rejected: {reason}" for reason in attempt.rejected]
+        if attempt.rejected:
+            lines += ["", *(f"- rejected: {reason}" for reason in attempt.rejected)]
         if attempt.search:
             lines += ["", "| search scenario | before | after |", "|---|---|---|"]
             lines += [
