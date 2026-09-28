@@ -440,6 +440,37 @@ The model judges what was notable, and code decides what is stored:
 - Nothing retracts what the user said.
 - A strategy is used only after several separate episodes support it.
 
+## Improving a project built on emissary
+
+`emissary.improve.improve()` runs one evaluation-gated round over your
+repository (ADR-0029). An emissary agent edits a throwaway git worktree —
+only paths you mark `editable` — and your own eval command, run by emissary,
+decides. A candidate must beat the baseline on the search split
+(`eval.compare`), then the holdout, which is scored once and never shown to
+the improver. An accepted change becomes a branch for you to review; your
+working branch is never touched.
+
+```python
+from pathlib import Path
+
+import emissary
+from emissary.improve import improve
+
+decision = improve(
+    ".",
+    caller=emissary.SpecModelCaller(emissary.parse_spec("anthropic:<model-id>")),
+    eval_command=["python", "-m", "evals.run"],  # writes write_eval_json(reports)
+    editable=["myagent/**"],
+    protected=["evals/**"],  # every grader and scenario file
+)
+Path("improve-report.md").write_text(decision.report)
+```
+
+The eval command reads `EMISSARY_EVAL_SPLIT` (`search` or `holdout`) and
+writes `write_eval_json(reports)` to the path in `EMISSARY_EVAL_OUTPUT`.
+It runs code a model wrote, and a worktree is not a sandbox: run `improve`
+in a container or CI job. See `examples/improve_toy/` for a complete project.
+
 ## Package layout
 
 The root package re-exports the common API. Larger applications can import from
@@ -452,6 +483,7 @@ the responsibility-specific modules instead:
 | `emissary.eval` | Deterministic run and trajectory evaluation |
 | `emissary.storage` | Optional versioned run-record persistence |
 | `emissary.memory` | Working and long-term memory, vector search as a tool, consolidation |
+| `emissary.improve` | Opt-in, evaluation-gated improvement of a project built on emissary |
 
 ## License
 

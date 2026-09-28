@@ -27,7 +27,7 @@ This is the honest universality boundary: a new model on an existing wire should
 - A hosted agent service or worker fleet.
 - A graph DSL or general workflow scheduler.
 - Exactly-once effects or transparent distributed recovery.
-- Built-in shell, browser, filesystem, or network tools.
+- Built-in shell, browser, filesystem, or network tools. (Exception: the opt-in improver's worktree-confined file tools, ADR-0029.)
 - A prompt-template framework. (Memory and vector retrieval were a non-goal until ADR-0025.)
 - A model router that guesses which model should handle a task.
 - Multi-agent handoff abstractions before nested single-agent runs are proven.
@@ -357,7 +357,7 @@ Checkpoint boundaries are after a model decision and after each tool completion.
 
 ## 14. Workflow and multi-agent composition
 
-Deterministic workflows should remain ordinary Python composition around `run()` until repeated needs justify combinators. Likely later primitives are sequential steps, deterministic routing, bounded parallel map, and evaluator/optimizer loops.
+Deterministic workflows should remain ordinary Python composition around `run()` until repeated needs justify combinators. Likely later primitives are sequential steps, deterministic routing, bounded parallel map, and evaluator/optimizer loops. The first evaluator/optimizer loop is `emissary.improve` (ADR-0029): one bounded round around a consumer's own eval command, producing a branch for review.
 
 Delegation is a nested run:
 

@@ -30,4 +30,5 @@
 | [0026](0026-embeddings-and-ocr.md) | Embeddings and OCR are calls, not conversations | accepted | 2026-09-27 |
 | [0027](0027-jev-decision-wire.md) | Jev gets a native wire, behind `call_choice` | accepted | 2026-09-27 |
 | [0028](0028-deadline-and-cancellation-are-terminal-events.md) | The deadline and cancellation are terminal events | accepted | 2026-09-28 |
+| [0029](0029-evaluation-gated-improvement.md) | Evaluation-gated improvement of projects built on emissary | accepted | 2026-09-28 |
 
