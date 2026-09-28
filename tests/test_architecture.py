@@ -109,3 +109,21 @@ def test_harness_core_runs_without_memory():
                 violations.append(path.name)
 
     assert violations == []
+
+
+def test_nothing_in_the_library_depends_on_the_improvement_loop():
+    """`improve` ships filesystem tools and runs subprocesses (ADR-0029).
+
+    It is opt-in: if the harness or any other layer imported it, every consumer
+    would carry an improver's workspace tools whether they asked for them or not.
+    """
+    importers = []
+    for path in PACKAGE.rglob("*.py"):
+        relative = path.relative_to(PACKAGE)
+        if relative.parts[0] == "improve":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module and "improve" in node.module:
+                importers.append(str(relative))
+
+    assert importers == []

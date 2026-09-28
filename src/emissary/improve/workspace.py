@@ -15,6 +15,7 @@ from ..harness.tools import Tool, ToolResult
 
 MAX_LINES = 400
 MAX_MATCHES = 100
+MAX_LISTED = 2000
 
 
 class Workspace:
@@ -104,6 +105,9 @@ class Workspace:
 
     def _list_files(self) -> ToolResult:
         lines = [f"{f} (editable)" if self.is_editable(f) else f for f in self.files()]
+        if len(lines) > MAX_LISTED:
+            shown = "\n".join(lines[:MAX_LISTED])
+            return ToolResult("warning", f"first {MAX_LISTED} of {len(lines)} files", shown)
         return ToolResult("success", f"{len(lines)} files", "\n".join(lines))
 
     def _read_file(self, path: str, start_line: int = 1) -> ToolResult:
