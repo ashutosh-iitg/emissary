@@ -381,8 +381,9 @@ scope is set. Each attempt spends the applicable
 budget before dispatch. Idempotent tool retries wait with exponential backoff
 (0.25, 0.5, 1 seconds, capped at 30 seconds by default); the per-tool base is
 `retry_backoff_seconds`. Exceeding a count limit returns
-a typed stopped result. The elapsed-time limit raises `TimeoutError`; `arun`
-cancels the active await, while `run` checks time between effects. In-process
+a typed stopped result, and so does the elapsed-time limit
+(`StopReason.MAX_DURATION`); `arun` cancels the active await, while `run`
+checks time before each effect and never discards a result already returned. In-process
 synchronous model callers and tools must return for that check to run. Run
 untrusted or potentially blocking code in an application-owned isolated
 process with its own kill deadline; the harness does not create worker threads.
@@ -398,7 +399,8 @@ disconnects. This stops admission of later model and tool attempts and wakes
 retry waits; it cannot interrupt a synchronous callback already running.
 An async frontend should cancel the task awaiting `arun()` or `acall_model()`;
 Emissary creates no per-request thread, and its async streams close on
-cancellation. A frontend that needs to terminate arbitrary blocking callbacks
+cancellation. A cancelled `arun()` records `run_stopped` (`cancelled`) to its
+event sink before re-raising `CancelledError`, since the task returns no result. A frontend that needs to terminate arbitrary blocking callbacks
 must own them in a process, because Python cannot kill a running thread.
 
 ## Memory

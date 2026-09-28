@@ -1,16 +1,18 @@
 """What the loop needs done, described rather than performed (ADR-0024).
 
-The runner's policy is not I/O; three things inside it are. Naming those three
-as values lets one loop serve a synchronous and an asynchronous driver, instead
+The runner's policy is not I/O; four things inside it are. Naming them as
+values lets one loop serve a synchronous and an asynchronous driver, instead
 of the policy being copied once per concurrency model.
 
-Each effect is a request. The driver performs it and sends the outcome back:
+Each effect is a request. The driver performs it and sends the outcome back,
+or throws in `RunCancelled` / `RunTimedOut` instead of performing it:
 
 | effect         | outcome the driver sends back |
 |----------------|-------------------------------|
 | `CallModel`    | `ModelResult`, or a `ProviderError` thrown in |
 | `ValidateTool` | `ToolResult` when the call is rejected, else `None` |
 | `ExecuteTool`  | `ToolResult` |
+| `WaitRetry`    | `None`, once the delay has elapsed |
 
 Deliberately not effects: event emission, which is synchronous and so costs an
 async driver nothing, and approval, which already has a designed asynchronous

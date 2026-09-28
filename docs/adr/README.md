@@ -29,4 +29,5 @@
 | [0025](0025-memory-is-a-harness-capability.md) | Memory is a harness capability; storage is the application's | accepted | 2026-09-27 |
 | [0026](0026-embeddings-and-ocr.md) | Embeddings and OCR are calls, not conversations | accepted | 2026-09-27 |
 | [0027](0027-jev-decision-wire.md) | Jev gets a native wire, behind `call_choice` | accepted | 2026-09-27 |
+| [0028](0028-deadline-and-cancellation-are-terminal-events.md) | The deadline and cancellation are terminal events | accepted | 2026-09-28 |
 

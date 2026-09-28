@@ -67,12 +67,11 @@ Application (stria, doom, future consumers)
                                               │
                                   credential/fallback/capability policy
                                               │
-                             ┌────────────────┴────────────────┐
-                             ▼                                 ▼
-                     Anthropic wire                    OpenAI-compatible wire
-                             │                                 │
-                           SDK                         OpenAI/Kimi/DeepSeek/
-                                                       Gemini/vLLM SDK wire
+              ┌──────────────┬────────────┴──────┬──────────────────┐
+              ▼              ▼                   ▼                  ▼
+        Anthropic wire   Gemini wire    OpenAI-compatible wire  TypeSafe wire
+         (Messages)   (generateContent)  OpenAI/Kimi/DeepSeek/  (Jev decisions,
+                                         OpenRouter/vLLM/…       call_choice only)
 ```
 
 `call_tool` and `call_choice` remain public convenience contracts. They may share lower-level translation helpers with `call_model`, but their behavior does not become an agent-loop special case.
@@ -81,25 +80,20 @@ Application (stria, doom, future consumers)
 
 ```text
 src/emissary/
-  provider.py       Provider registry, Spec, declared capabilities
-  errors.py         Model/provider errors and retry classification
-  model.py          Standard normalized LLM caller interface
-  messages.py       Provider-neutral input content and conversation items
-  decision.py       FinalOutput | ToolCalls | Refusal
-  result.py         Existing results plus model-turn usage/provenance
-  calls.py          Backward-compatible call_tool and call_choice
-  selection.py      Existing spec resolution and availability fallback
-  wire/
-    anthropic_wire.py
-    openai_wire.py
-    types.py
-  tools.py          Tool definitions, schemas, calls, outcomes, registry
-  agent.py          Immutable Agent and RunLimits definitions
-  runner.py         Synchronous bounded state machine
-  state.py          RunState, RunResult, statuses, stop reasons
-  events.py         Typed events and EventSink protocol
-  context.py        ContextPolicy protocol and transparent default
-  policy.py         Approval and tool-execution policy protocols
+  llm/              The model boundary — see CLAUDE.md for its modules
+    wire/           anthropic, gemini, openai_compatible, typesafe, thinking
+  harness/
+    agent.py        Immutable Agent and RunLimits definitions
+    machine.py      The bounded loop: all policy, no I/O (ADR-0024)
+    effects.py      CallModel | ValidateTool | ExecuteTool | WaitRetry
+    runner.py       run / arun: drivers that perform effects
+    tools.py        Tool definitions, schemas, outcomes, registry, executor
+    policy.py       Approval protocol
+    context.py      ContextPolicy protocol and defaults
+    events.py       RunEvent and EventSink protocol
+    projection.py   Event log → model-visible messages (ADR-0011)
+    state.py        RunResult, statuses, stop reasons
+  eval/, storage/, memory/   Depend on the harness; it depends on none of them
 ```
 
 Modules are introduced only when their first behavior lands. The list describes ownership, not a requirement to create empty scaffolding.
@@ -242,12 +236,14 @@ RUNNING ── final output ─────────────► COMPLETED
    ├── tool calls ─► execute/observe ─┘ (next turn)
    ├── approval required ────────────► PAUSED
    ├── refusal ──────────────────────► REFUSED
-   ├── limit reached ────────────────► STOPPED
+   ├── limit or deadline reached ────► STOPPED
    ├── cancellation ─────────────────► CANCELLED
    └── unrecoverable failure ────────► FAILED
-
-PAUSED ── approve/reject + resume ───► RUNNING / STOPPED
 ```
+
+`PAUSED` is terminal today: there is no resume, and a paused log ends on an
+unanswered tool call, which `history=` rejects. A caller proceeds by re-running
+the task with an `Approver`. Resuming in place waits on the §13 conditions.
 
 Terminal states are immutable. Every transition emits an event. `RunResult` always includes status, stop reason, accumulated usage, final or partial state, and events or a trace reference.
 
@@ -404,7 +400,8 @@ Versioned scenarios include an initial state, task, tools, deterministic grader,
 
 ## 17. Proposed decision ledger
 
-These decisions are proposed, not accepted ADRs.
+D1–D8, D13, D14 and D9a are accepted as ADR-0001–0008, 0010, 0009 and 0025;
+the rest remain proposed.
 
 | ID | Decision | Alternative rejected | Validation |
 |---|---|---|---|

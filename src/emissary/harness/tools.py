@@ -173,6 +173,8 @@ class LocalToolExecutor:
 
 class ToolRegistry:
     def __init__(self, tools: tuple[Tool, ...]):
+        # Raises for a read-only tool with no declared API access, so the gap
+        # fails registration rather than the first attempt mid-run.
         for tool in tools:
             _scope = tool.effective_api_scope
         by_name = {tool.name: tool for tool in tools}

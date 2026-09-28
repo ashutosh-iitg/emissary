@@ -23,7 +23,7 @@ from typing import Any
 from ..llm.decision import FinalOutput, Refusal, ToolCalls, Usage
 from ..llm.errors import ProviderError
 from ..llm.messages import Message, TextBlock, UserMessage
-from .agent import Agent, ModelAttemptLimitExceeded, RunCancelled
+from .agent import Agent, ModelAttemptLimitExceeded, RunCancelled, RunTimedOut
 from .context import CompleteHistory, ContextPolicy
 from .effects import CallModel, Effect, ExecuteTool, ValidateTool, WaitRetry
 from .events import EventSink, NullEventSink, RunEvent, new_event
@@ -92,6 +92,11 @@ def agent_machine(
         emit(kind, status=status.value, reason=reason.value)
         return RunResult(run_id, status, reason, output, usage, tuple(events))
 
+    def interrupted(exc: RunCancelled) -> RunResult:
+        if isinstance(exc, RunTimedOut):
+            return finish(RunStatus.STOPPED, StopReason.MAX_DURATION)
+        return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
+
     emit("run_started", agent=agent.name)
     if history:
         emit("history_loaded", messages=[message_to_data(message) for message in history])
@@ -135,8 +140,8 @@ def agent_machine(
             return finish(RunStatus.FAILED, StopReason.MODEL_ERROR)
         except ModelAttemptLimitExceeded:
             return finish(RunStatus.STOPPED, StopReason.MAX_MODEL_ATTEMPTS)
-        except RunCancelled:
-            return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
+        except RunCancelled as exc:
+            return interrupted(exc)
 
         usage = Usage(
             usage.input_tokens + model_result.usage.input_tokens,
@@ -173,8 +178,8 @@ def agent_machine(
                 return finish(RunStatus.FAILED, StopReason.INVALID_TOOL)
             try:
                 invalid = yield ValidateTool(call, tool)
-            except RunCancelled:
-                return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
+            except RunCancelled as exc:
+                return interrupted(exc)
             if invalid is not None:
                 emit("tool_call_rejected", call_id=call.id, reason=invalid.summary)
                 return finish(RunStatus.FAILED, StopReason.INVALID_TOOL)
@@ -214,8 +219,8 @@ def agent_machine(
                         external_api_attempts += 1
                     try:
                         outcome = yield ExecuteTool(call, tool, ToolContext(run_id, attempt))
-                    except RunCancelled:
-                        return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
+                    except RunCancelled as exc:
+                        return interrupted(exc)
                     # `max_attempts > 1` already implies idempotent (Tool rejects
                     # otherwise), so a retryable failure is safe to repeat here.
                     if not outcome.retryable or attempt == tool.max_attempts:
@@ -230,8 +235,8 @@ def agent_machine(
                         yield WaitRetry(
                             min(tool.retry_backoff_seconds * 2 ** min(attempt - 1, 16), 30.0)
                         )
-                    except RunCancelled:
-                        return finish(RunStatus.CANCELLED, StopReason.CANCELLED)
+                    except RunCancelled as exc:
+                        return interrupted(exc)
                 if outcome.status == "error":
                     tool_failures[call.name] = tool_failures.get(call.name, 0) + 1
                     if tool_failures[call.name] >= agent.limits.max_tool_failures:

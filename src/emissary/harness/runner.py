@@ -7,6 +7,7 @@ that keeps a new limit or terminal condition from having to be written twice.
 """
 
 import asyncio
+import contextlib
 import inspect
 import threading
 import time
@@ -24,9 +25,9 @@ from ..llm.model import (
     ModelCaller,
     SpecModelCaller,
 )
-from .agent import Agent, ModelAttemptLimitExceeded, RunCancelled
+from .agent import Agent, ModelAttemptLimitExceeded, RunCancelled, RunTimedOut
 from .context import ContextPolicy
-from .effects import CallModel, Effect, ValidateTool, WaitRetry
+from .effects import CallModel, Effect, ExecuteTool, ValidateTool, WaitRetry
 from .events import EventSink
 from .machine import agent_machine
 from .policy import Approver
@@ -61,31 +62,33 @@ def run(
     failure: ProviderError | ModelAttemptLimitExceeded | RunCancelled | None = None
     deadline = time.monotonic() + agent.limits.max_duration_seconds
 
-    def check_cancel() -> None:
+    def check_stop() -> None:
         if cancel_event is not None and cancel_event.is_set():
             raise RunCancelled()
+        if time.monotonic() >= deadline:
+            raise RunTimedOut()
 
     if cancel_event is not None and isinstance(caller, FallbackModelCaller):
 
         def retry_sleep(seconds: float) -> None:
             if cancel_event.wait(min(seconds, max(0.0, deadline - time.monotonic()))):
                 raise RunCancelled()
-            check_cancel()
+            check_stop()
 
         caller = replace(caller, retry_sleep=retry_sleep)
-    caller = _budget_caller(caller, agent.limits.max_model_attempts, check_cancel=check_cancel)
+    caller = _budget_caller(caller, agent.limits.max_model_attempts, check_stop=check_stop)
 
     try:
         while True:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("agent run exceeded max_duration_seconds")
             try:
                 effect = machine.throw(failure) if failure is not None else machine.send(outcome)
             except StopIteration as stop:
                 return stop.value
             failure, outcome = None, None
             try:
-                check_cancel()
+                # Checked before dispatch, like every count budget: the deadline
+                # stops new work and never discards a result already paid for.
+                check_stop()
                 outcome = _perform(effect, caller, active, deadline, cancel_event)
             except (ProviderError, ModelAttemptLimitExceeded, RunCancelled) as exc:
                 failure = exc
@@ -121,38 +124,49 @@ async def arun(
     )
     active = executor or LocalToolExecutor()
     outcome: Any = None
-    failure: ProviderError | ModelAttemptLimitExceeded | None = None
+    failure: ProviderError | ModelAttemptLimitExceeded | RunTimedOut | None = None
     deadline = time.monotonic() + agent.limits.max_duration_seconds
     caller = _budget_caller(caller, agent.limits.max_model_attempts, asynchronous=True)
 
     try:
-        async with asyncio.timeout(agent.limits.max_duration_seconds):
-            while True:
+        while True:
+            try:
+                effect = machine.throw(failure) if failure is not None else machine.send(outcome)
+            except StopIteration as stop:
+                return stop.value
+            failure, outcome = None, None
+            timer = asyncio.timeout(deadline - time.monotonic())
+            try:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError("agent run exceeded max_duration_seconds")
-                try:
-                    effect = (
-                        machine.throw(failure) if failure is not None else machine.send(outcome)
-                    )
-                except StopIteration as stop:
-                    return stop.value
-                failure, outcome = None, None
-                try:
+                    raise RunTimedOut()
+                async with timer:
                     outcome = await _aperform(effect, caller, active, deadline)
-                except (ProviderError, ModelAttemptLimitExceeded) as exc:
-                    failure = exc
+            except (ProviderError, ModelAttemptLimitExceeded, RunTimedOut) as exc:
+                failure = exc
+            except TimeoutError:
+                # Only our own deadline is a run stop; a TimeoutError raised by
+                # the caller or a tool is theirs to report.
+                if not timer.expired():
+                    raise
+                failure = RunTimedOut()
+    except asyncio.CancelledError:
+        # A cancelled task cannot return a RunResult, but its log still ends on
+        # a terminal event before the cancellation carries on.
+        with contextlib.suppress(StopIteration):
+            machine.throw(RunCancelled())
+        raise
     finally:
         machine.close()
 
 
-def _budget_caller(caller, max_attempts: int, *, asynchronous: bool = False, check_cancel=None):
+def _budget_caller(caller, max_attempts: int, *, asynchronous: bool = False, check_stop=None):
     """Count built-in physical attempts; count an opaque caller once per invocation."""
     attempts = 0
 
     def admit() -> None:
         nonlocal attempts
-        if check_cancel is not None:
-            check_cancel()
+        if check_stop is not None:
+            check_stop()
         if attempts >= max_attempts:
             raise ModelAttemptLimitExceeded()
         attempts += 1
@@ -191,8 +205,8 @@ def _perform(
     deadline: float,
     cancel_event: threading.Event | None = None,
 ) -> Any:
-    """Exhaustive over the effect union; a missing branch would hang the
-    machine rather than raise, so the union is kept small (ADR-0024)."""
+    """Exhaustive over the effect union (ADR-0024). An unknown effect raises:
+    a silent fallthrough would perform it as whichever branch came last."""
     if isinstance(effect, CallModel):
         return caller(
             system=effect.system,
@@ -209,7 +223,9 @@ def _perform(
         elif cancel_event.wait(delay):
             raise RunCancelled()
         return None
-    return executor.execute(effect.call, effect.tool, effect.context)
+    if isinstance(effect, ExecuteTool):
+        return executor.execute(effect.call, effect.tool, effect.context)
+    raise TypeError(f"unhandled effect {type(effect).__name__}")
 
 
 async def _aperform(
