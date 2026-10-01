@@ -497,6 +497,7 @@ def test_the_effect_union_stays_small_enough_for_thin_drivers():
     from emissary.harness import effects
 
     assert set(effects.__all__) == {
+        "AuthorizeTool",
         "CallModel",
         "Effect",
         "ExecuteTool",

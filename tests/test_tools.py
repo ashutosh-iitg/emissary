@@ -119,3 +119,35 @@ def test_local_executor_sanitizes_unexpected_exceptions():
     assert result.status == "error"
     assert result.summary == "lookup failed"
     assert "secret-token" not in result.summary
+
+
+def test_schemas_are_validated_in_the_dialect_they_declare():
+    """Draft 7 `dependencies` is ignored by 2020-12; validating in the wrong
+    dialect would let a call through that the server then rejects mid-batch."""
+    from emissary.harness.tools import LocalToolExecutor, Tool
+    from emissary.llm.decision import ToolCall
+
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "dependencies": {"a": ["b"]},
+    }
+    tool = Tool("t", "d", schema, lambda **_: 1, api_scope="none")
+
+    rejected = LocalToolExecutor().validate(ToolCall("1", "t", {"a": 1}), tool)
+    accepted = LocalToolExecutor().validate(ToolCall("2", "t", {"a": 1, "b": 2}), tool)
+
+    assert rejected is not None and accepted is None
+
+
+def test_a_schema_that_cannot_be_evaluated_is_a_controlled_rejection():
+    from emissary.harness.tools import LocalToolExecutor, Tool
+    from emissary.llm.decision import ToolCall
+
+    tool = Tool(
+        "t", "d", {"type": "object", "$ref": "#/$defs/missing"}, lambda: 1, api_scope="none"
+    )
+
+    outcome = LocalToolExecutor().validate(ToolCall("1", "t", {}), tool)
+
+    assert outcome is not None and outcome.status == "error"

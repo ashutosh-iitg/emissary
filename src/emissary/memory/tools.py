@@ -10,7 +10,7 @@ consolidation, where they can carry evidence.
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from ..harness.tools import Tool
+from ..harness.tooling.tools import Tool
 from .records import Fact
 from .stores import EpisodeStore, FactStore, Scratchpad, VectorStore
 

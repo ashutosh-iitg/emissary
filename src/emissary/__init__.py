@@ -1,12 +1,24 @@
 from .eval import EvaluationReport, EvaluationScenario, EventGrader, evaluate
 from .harness.agent import Agent, RunLimits
-from .harness.context import CompleteHistory, ContextOp, ContextPolicy, RecentHistory
-from .harness.events import EventSink, InMemoryEventSink, RunEvent
-from .harness.policy import ApprovalDecision, Approver
-from .harness.projection import derive_messages
-from .harness.runner import arun, run
+from .harness.conversation.context import CompleteHistory, ContextOp, ContextPolicy, RecentHistory
+from .harness.conversation.events import EventSink, InMemoryEventSink, RunEvent
+from .harness.conversation.projection import derive_messages
+from .harness.execution.runner import arun, run
+from .harness.policy import (
+    AllowRegisteredTools,
+    ApprovalDecision,
+    Approver,
+    AuthorizationContext,
+    AuthorizationDecision,
+    Authorizer,
+    InvocationRequest,
+)
 from .harness.state import RunResult, RunStatus, StopReason
-from .harness.tools import (
+from .harness.tooling.preparation import PreparationError, PreparedRun, prepare
+from .harness.tooling.sources import PreparedToolSource, ToolBinding, ToolOrigin, ToolSource
+from .harness.tooling.tools import (
+    AsyncLocalToolExecutor,
+    AsyncToolExecutor,
     LocalToolExecutor,
     Tool,
     ToolContext,
@@ -59,13 +71,19 @@ from .storage import RunStore, SQLiteRunStore, deserialize_run, serialize_run
 __all__ = [
     "PROVIDERS",
     "Agent",
+    "AllowRegisteredTools",
     "ApprovalDecision",
     "Approver",
     "AssistantMessage",
     "AsyncFallbackModelCaller",
+    "AsyncLocalToolExecutor",
     "AsyncModelCaller",
     "AsyncSpecModelCaller",
     "AsyncStreamSink",
+    "AsyncToolExecutor",
+    "AuthorizationContext",
+    "AuthorizationDecision",
+    "Authorizer",
     "CallResult",
     "CapabilityError",
     "ChoiceResult",
@@ -81,6 +99,7 @@ __all__ = [
     "FallbackModelCaller",
     "FinalOutput",
     "InMemoryEventSink",
+    "InvocationRequest",
     "LocalToolExecutor",
     "Message",
     "ModelCaller",
@@ -88,6 +107,9 @@ __all__ = [
     "ModelResult",
     "ModelSettings",
     "OcrResult",
+    "PreparationError",
+    "PreparedRun",
+    "PreparedToolSource",
     "Prompt",
     "Provider",
     "ProviderError",
@@ -106,14 +128,17 @@ __all__ = [
     "StreamSink",
     "TextBlock",
     "Tool",
+    "ToolBinding",
     "ToolCall",
     "ToolCalls",
     "ToolContext",
     "ToolDefinition",
     "ToolExecutor",
     "ToolMessage",
+    "ToolOrigin",
     "ToolRegistry",
     "ToolResult",
+    "ToolSource",
     "Usage",
     "UserMessage",
     "acall_choice",
@@ -133,6 +158,7 @@ __all__ = [
     "key_present",
     "ocr",
     "parse_spec",
+    "prepare",
     "resolve_spec",
     "run",
     "serialize_run",

@@ -24,6 +24,11 @@ dependencies = [
 gemini = [
     "google-genai>=2.18.1",
 ]
+# Tool sources over MCP. Pinned to the tested minor: the 2.x client API is still
+# moving, and SDK types must not leak past `emissary/mcp/`.
+mcp = [
+    "mcp>=2.2,<2.3",
+]
 
 [dependency-groups]
 dev = [
@@ -33,6 +38,7 @@ dev = [
     # The suite covers every wire, so the optional SDK is required to test.
     "google-genai>=2.18.1",
     "pytest-asyncio>=1.4.0",
+    "mcp>=2.2,<2.3",
 ]
 
 [tool.pytest.ini_options]

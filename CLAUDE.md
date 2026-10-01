@@ -133,11 +133,16 @@ llm/
     openai_compatible.py  OpenAI-compatible chat completions, embeddings, OCR
     typesafe.py           TypeSafe's Jev decision endpoint (ADR-0027)
     thinking.py           provider-neutral reasoning controls
-harness/             bounded agent loop, effects, tools, and event projection
+harness/             public API, agent configuration, policy and run state
+  execution/         shared machine, effects and sync/async drivers
+  tooling/           tool contracts, sources, discovery and routing
+  conversation/      context, events and event projection
+  *.py aliases       legacy deep imports; new code uses the canonical subpackages
 eval/                recorded evaluation and deterministic replay
 storage/             run persistence
 memory/              harness memory: store protocols, memory tools, recall, consolidation (ADR-0025)
 improve/             opt-in evaluation-gated improvement of a consumer's repo (ADR-0029)
+mcp/                 optional MCP tool sources; the only place the MCP SDK is imported (ADR-0030)
 ```
 
 Data flow: caller builds a `Spec` → `model.call_model` or `calls.call_tool`

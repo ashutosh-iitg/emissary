@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterator, Sequence
 from pathlib import Path, PurePosixPath
 
-from ..harness.tools import Tool, ToolResult
+from ..harness.tooling.tools import Tool, ToolResult
 
 MAX_LINES = 400
 MAX_MATCHES = 100

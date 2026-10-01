@@ -5,8 +5,8 @@ from enum import Enum
 
 from ..llm.decision import FinalOutput, Usage
 from ..llm.messages import Message
-from .events import RunEvent
-from .projection import derive_messages
+from .conversation.events import RunEvent
+from .conversation.projection import derive_messages
 
 
 class RunStatus(str, Enum):
@@ -37,6 +37,9 @@ class StopReason(str, Enum):
     APPROVAL_REQUIRED = "approval_required"
     APPROVAL_REJECTED = "approval_rejected"
     CANCELLED = "cancelled"
+    AUTHORIZATION_DENIED = "authorization_denied"
+    AUTHORIZATION_ERROR = "authorization_error"
+    PREPARATION_FAILED = "preparation_failed"
 
 
 @dataclass(frozen=True)
