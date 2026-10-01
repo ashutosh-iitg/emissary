@@ -64,7 +64,7 @@ def test_the_credential_probe_exception_stays_narrow():
 
 def test_harness_core_does_not_depend_on_provider_registry_or_wires():
     violations = []
-    for path in (PACKAGE / "harness").glob("*.py"):
+    for path in (PACKAGE / "harness").rglob("*.py"):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if (
@@ -102,7 +102,7 @@ def test_harness_core_runs_without_memory():
     """Memory builds on the loop, never the reverse: an agent with no memory must
     not pay for it, and the loop must not grow opinions about what to remember."""
     violations = []
-    for path in (PACKAGE / "harness").glob("*.py"):
+    for path in (PACKAGE / "harness").rglob("*.py"):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module and "memory" in node.module:
@@ -127,3 +127,96 @@ def test_nothing_in_the_library_depends_on_the_improvement_loop():
                 importers.append(str(relative))
 
     assert importers == []
+
+
+MCP_SDK_MODULES = {"mcp", "mcp_types", "httpx2"}
+MCP_ADAPTER = "mcp"
+
+
+def _imported_roots(path: Path) -> set[str]:
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Import):
+            roots |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            roots.add(node.module.split(".")[0])
+    return roots
+
+
+def test_the_mcp_sdk_and_its_http_stack_are_imported_only_by_the_mcp_adapter():
+    violations = [
+        str(path.relative_to(PACKAGE))
+        for path in PACKAGE.rglob("*.py")
+        if path.relative_to(PACKAGE).parts[0] != MCP_ADAPTER
+        and _imported_roots(path) & MCP_SDK_MODULES
+    ]
+
+    assert violations == []
+
+
+def test_nothing_in_the_library_depends_on_the_mcp_adapter():
+    """The harness sees only the `ToolSource` protocol. Were it to import the
+    adapter, every install would need the optional SDK."""
+    importers = []
+    for path in PACKAGE.rglob("*.py"):
+        relative = path.relative_to(PACKAGE)
+        if relative.parts[0] == MCP_ADAPTER:
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                absolute = node.module.startswith("emissary.mcp") or (
+                    node.level > 0 and node.module.split(".")[0] == MCP_ADAPTER
+                )
+                if absolute:
+                    importers.append(str(relative))
+
+    assert importers == []
+
+
+def test_importing_emissary_does_not_load_the_optional_mcp_extra():
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys, emissary; "
+        "loaded = [m for m in sys.modules if m.split('.')[0] in ('mcp', 'mcp_types', 'httpx2')]; "
+        "assert not loaded, loaded; assert 'emissary.mcp' not in sys.modules"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_library_imports_use_canonical_harness_modules():
+    from importlib.util import resolve_name
+
+    legacy = {
+        f"emissary.harness.{name}"
+        for name in (
+            "runner",
+            "machine",
+            "effects",
+            "tools",
+            "sources",
+            "preparation",
+            "context",
+            "events",
+            "projection",
+        )
+    }
+    violations = []
+    for path in PACKAGE.rglob("*.py"):
+        relative = path.relative_to(PACKAGE).with_suffix("")
+        parts = ("emissary", *relative.parts)
+        package = ".".join(parts[:-1])
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                name = resolve_name("." * node.level + node.module, package)
+                if name in legacy:
+                    violations.append(str(relative))
+            elif isinstance(node, ast.Import):
+                if any(alias.name in legacy for alias in node.names):
+                    violations.append(str(relative))
+    assert violations == []

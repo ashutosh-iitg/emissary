@@ -10,6 +10,9 @@ class ToolDefinition:
     description: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any] | None = None
+    # None keeps the provider's default. False asks a wire that would otherwise
+    # force strict mode not to, for schemas it cannot represent faithfully.
+    strict: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.name:

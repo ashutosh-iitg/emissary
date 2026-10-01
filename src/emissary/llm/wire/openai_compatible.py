@@ -224,7 +224,7 @@ def _request(
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.input_schema,
-                **({"strict": True} if provider.strict else {}),
+                **({"strict": True} if provider.strict and tool.strict is not False else {}),
             },
         }
         for tool in tools

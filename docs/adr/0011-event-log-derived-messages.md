@@ -7,7 +7,7 @@
 ## Context
 
 ADR-0008 made events the canonical trajectory, but the runner does not honor it
-for conversation state. `harness/runner.py` hand-threads `messages` as a mutated
+for conversation state. `harness/execution/runner.py` hand-threads `messages` as a mutated
 tuple that is simultaneously the durable record and the model-visible view, and
 `RecentHistory` trims tail history with no event recording what was dropped or
 why. Two sources of truth exist, and one of them loses information silently.

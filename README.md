@@ -239,7 +239,7 @@ results = await asyncio.gather(*(
 ))
 ```
 
-Both drive the *same* loop. `harness/machine.py` holds every policy — limits,
+Both drive the *same* loop. `harness/execution/machine.py` holds every policy — limits,
 validation ordering, circuit breaking, retries, terminal conditions — and
 yields the three things it cannot do itself (`CallModel`, `ValidateTool`,
 `ExecuteTool`); `run` and `arun` perform them and send the outcomes back. A new
@@ -403,6 +403,52 @@ cancellation. A cancelled `arun()` records `run_stopped` (`cancelled`) to its
 event sink before re-raising `CancelledError`, since the task returns no result. A frontend that needs to terminate arbitrary blocking callbacks
 must own them in a process, because Python cannot kill a running thread.
 
+## Tool sources (MCP) and authorization
+
+Install the optional extra with `pip install emissary[mcp]`. An MCP server is a
+tool *source*: it is discovered when a run starts and its tools join the same
+registry and the same loop as direct tools.
+
+```python
+from emissary import Agent, AuthorizationContext, arun
+from emissary.mcp import MCPToolPolicy, MCPToolset, Stdio, StreamableHTTP
+
+claims = MCPToolset(
+    "claims",
+    StreamableHTTP("https://claims.example.com/mcp", auth=claims_auth),  # an httpx2.Auth
+    MCPToolPolicy(api_scope="external"),
+    include_tools=("lookup_claim",),
+)
+files = MCPToolset(
+    "files", Stdio("python", ("files_server.py",)), MCPToolPolicy(api_scope="internal")
+)
+agent = Agent("assistant", "Review the claim.", tools=(calculate_total,), toolsets=(claims, files))
+
+result = await arun(
+    agent, "Review claim 123", caller=caller,
+    authorizer=policy,  # (InvocationRequest) -> request.allow() / request.deny()
+    authorization_context=AuthorizationContext("user-42", "tenant-7"),
+)
+```
+
+Remote tools are named `namespace__tool`. Access is classified by *your*
+`MCPToolPolicy`, never by transport or by server annotations. Sources need
+`arun`; `run` rejects them. A required source that cannot be prepared ends the
+run with `preparation_failed`; mark one `required=False` to omit it visibly.
+Use `async with prepare(agent) as prepared` and `arun(..., prepared=prepared)`
+to share connections across runs for one identity.
+
+An `authorizer` is asked about each exact request: for the whole batch before
+any tool runs, and again before every attempt. It runs even when a tool's
+approval is `"never"`, and a denial stops the run. Dispatch uses the
+authorized snapshot, so callbacks cannot change the arguments. Without an
+authorizer the registered catalog is delegated as before. Enforce contextual
+rules in the backend too: exact arguments do not make a state check atomic.
+
+Prepared MCP tools are not retried and receive no injected arguments. Binary
+tool output (images, audio, blobs) is reported as unsupported, never dropped
+silently or inlined as base64. See ADR-0030 and ADR-0031.
+
 ## Memory
 
 Memory is a harness capability, and storage is yours (ADR-0025). Emissary defines the
@@ -484,6 +530,14 @@ the responsibility-specific modules instead:
 | `emissary.storage` | Optional versioned run-record persistence |
 | `emissary.memory` | Working and long-term memory, vector search as a tool, consolidation |
 | `emissary.improve` | Opt-in, evaluation-gated improvement of a project built on emissary |
+| `emissary.mcp` | Optional (`emissary[mcp]`): MCP servers as tool sources, over stdio or Streamable HTTP |
+
+The harness implementation is grouped into `execution` (drivers and the shared
+machine), `tooling` (registry, sources and preparation), and `conversation`
+(context, events and projection). Agent configuration, policy and run state
+remain at the harness root. Existing imports such as
+`emissary.harness.runner` remain compatibility aliases; new code can use
+`emissary.harness.execution.runner` or the public `emissary.harness` API.
 
 ## License
 

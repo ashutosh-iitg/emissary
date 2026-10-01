@@ -3,7 +3,8 @@
 from dataclasses import dataclass, field
 
 from ..llm.decision import ModelSettings
-from .tools import Tool
+from .tooling.sources import ToolSource
+from .tooling.tools import Tool
 
 
 class ModelAttemptLimitExceeded(Exception):
@@ -68,6 +69,7 @@ class Agent:
     tools: tuple[Tool, ...] = ()
     limits: RunLimits = field(default_factory=RunLimits)
     model_settings: ModelSettings = field(default_factory=ModelSettings)
+    toolsets: tuple[ToolSource, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.name:

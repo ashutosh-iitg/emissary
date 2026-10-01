@@ -6,9 +6,10 @@ that every scripted test would still pass. Both substitutes are deterministic
 and network-free.
 """
 
-from ..harness.projection import model_result_from_data, tool_result_from_data
+from ..harness.conversation.projection import model_result_from_data, tool_result_from_data
+from ..harness.policy import AuthorizationDecision, InvocationRequest
 from ..harness.state import RunResult
-from ..harness.tools import LocalToolExecutor, Tool, ToolContext, ToolResult
+from ..harness.tooling.tools import LocalToolExecutor, Tool, ToolContext, ToolResult
 from ..llm.decision import ModelResult, ModelSettings, ToolCall, ToolDefinition
 from ..llm.messages import Message
 
@@ -56,7 +57,12 @@ class ReplayToolExecutor:
 
     Validation is delegated to the real local executor so a recorded run that
     ended in `INVALID_TOOL` replays down the same path.
+
+    `serves_every_tool` tells a routing executor to send source-bound tools here
+    too, so a recorded run that used tool sources replays with no live server.
     """
+
+    serves_every_tool = True
 
     def __init__(self, recorded: RunResult):
         self._outcomes = {
@@ -76,12 +82,40 @@ class ReplayToolExecutor:
             raise ReplayExhausted(f"no recorded outcome for call {call.id!r}") from None
 
 
+class RecordedAuthorizer:
+    """Answer each authorization question the way the recorded run was answered.
+
+    Keyed by call and attempt and consumed in order, because one attempt is
+    asked twice (batch, then just before execution). No live policy, credential
+    or server is needed, and a divergence in what is asked fails loudly.
+    """
+
+    def __init__(self, recorded: RunResult):
+        self._answers: dict[tuple[str, int], list[dict]] = {}
+        for event in recorded.events:
+            if event.kind == "authorization_resolved":
+                key = (event.data["call_id"], event.data["attempt"])
+                self._answers.setdefault(key, []).append(event.data)
+
+    def __call__(self, request: InvocationRequest) -> AuthorizationDecision:
+        queue = self._answers.get((request.call_id, request.attempt))
+        if not queue:
+            raise ReplayExhausted(
+                f"no recorded authorization for call {request.call_id!r} attempt {request.attempt}"
+            )
+        recorded = queue.pop(0)
+        if recorded["allowed"]:
+            return request.allow(recorded["reason"], policy_version=recorded["policy_version"])
+        return request.deny(recorded["reason"], policy_version=recorded["policy_version"])
+
+
 def trajectory(result: RunResult) -> list[tuple[int, str]]:
     """The comparable shape of a run: ordered kinds, without the run id or clock."""
     return [(event.sequence, event.kind) for event in result.events]
 
 
 __all__ = [
+    "RecordedAuthorizer",
     "ReplayExhausted",
     "ReplayModelCaller",
     "ReplayToolExecutor",

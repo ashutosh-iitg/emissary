@@ -83,18 +83,36 @@ src/emissary/
   llm/              The model boundary — see CLAUDE.md for its modules
     wire/           anthropic, gemini, openai_compatible, typesafe, thinking
   harness/
+    __init__.py     Public convenience API
     agent.py        Immutable Agent and RunLimits definitions
-    machine.py      The bounded loop: all policy, no I/O (ADR-0024)
-    effects.py      CallModel | ValidateTool | ExecuteTool | WaitRetry
-    runner.py       run / arun: drivers that perform effects
-    tools.py        Tool definitions, schemas, outcomes, registry, executor
-    policy.py       Approval protocol
-    context.py      ContextPolicy protocol and defaults
-    events.py       RunEvent and EventSink protocol
-    projection.py   Event log → model-visible messages (ADR-0011)
+    policy.py       Authorization and approval contracts
     state.py        RunResult, statuses, stop reasons
+    execution/
+      machine.py    The bounded loop: all policy, no I/O (ADR-0024)
+      effects.py    CallModel | ValidateTool | AuthorizeTool | ExecuteTool | WaitRetry
+      runner.py     run / arun: drivers that perform effects
+    tooling/
+      tools.py      Definitions, schemas, outcomes, registry, executor
+      sources.py    ToolSource protocol and origin bindings
+      preparation.py  Discovery, routing and connection ownership (ADR-0030)
+    conversation/
+      context.py    ContextPolicy protocol and defaults
+      events.py     RunEvent and EventSink protocol
+      projection.py Event log → model-visible messages (ADR-0011)
   eval/, storage/, memory/   Depend on the harness; it depends on none of them
 ```
+
+The old flat harness modules remain compatibility aliases to the canonical
+modules above. Both import paths resolve to the same module and class objects,
+including monkeypatch targets and historical pickle paths. New library code
+imports the canonical paths; the root and harness public APIs are unchanged.
+The architecture checks scan nested packages recursively.
+
+The other packages retain their existing boundaries: `llm/wire` isolates vendor
+adapters; `mcp` isolates the optional SDK; `memory` owns store protocols and
+memory capabilities; `eval` owns evaluation and replay; `storage` owns
+persistence; `improve` owns the opt-in improvement workflow. Their callers use
+the canonical harness modules without adding new cross-layer dependencies.
 
 Modules are introduced only when their first behavior lands. The list describes ownership, not a requirement to create empty scaffolding.
 

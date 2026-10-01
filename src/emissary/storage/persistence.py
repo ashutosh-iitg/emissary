@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from ..harness.events import RunEvent
+from ..harness.conversation.events import RunEvent
 from ..harness.state import RunResult, RunStatus, StopReason
 from ..llm.decision import FinalOutput, Usage
 

@@ -9,13 +9,20 @@ from .evaluation import (
     compare,
     evaluate,
 )
-from .replay import ReplayExhausted, ReplayModelCaller, ReplayToolExecutor, trajectory
+from .replay import (
+    RecordedAuthorizer,
+    ReplayExhausted,
+    ReplayModelCaller,
+    ReplayToolExecutor,
+    trajectory,
+)
 
 __all__ = [
     "Comparison",
     "EvaluationReport",
     "EvaluationScenario",
     "EventGrader",
+    "RecordedAuthorizer",
     "ReplayExhausted",
     "ReplayModelCaller",
     "ReplayToolExecutor",
